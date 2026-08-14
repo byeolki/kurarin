@@ -1,0 +1,165 @@
+import Foundation
+import Carbon.HIToolbox
+import AppKit
+
+public struct HotKey: Codable, Equatable, Hashable, Sendable {
+    public var keyCode: UInt32
+    public var modifiers: UInt32
+
+    public init(keyCode: UInt32, modifiers: UInt32) {
+        self.keyCode = keyCode
+        self.modifiers = modifiers
+    }
+
+    public var displayName: String {
+        var parts: [String] = []
+        if modifiers & UInt32(controlKey) != 0 { parts.append("⌃") }
+        if modifiers & UInt32(optionKey) != 0 { parts.append("⌥") }
+        if modifiers & UInt32(shiftKey) != 0 { parts.append("⇧") }
+        if modifiers & UInt32(cmdKey) != 0 { parts.append("⌘") }
+        parts.append(HotKey.keyName(for: keyCode))
+        return parts.joined()
+    }
+
+    private static func keyName(for keyCode: UInt32) -> String {
+        let names: [UInt32: String] = [
+            18: "1", 19: "2", 20: "3", 21: "4", 23: "5", 22: "6", 26: "7", 28: "8", 25: "9", 29: "0",
+            122: "F1", 120: "F2", 99: "F3", 118: "F4", 96: "F5", 97: "F6",
+            98: "F7", 100: "F8", 101: "F9", 109: "F10", 103: "F11", 111: "F12",
+            0: "A", 11: "B", 8: "C", 2: "D", 14: "E", 3: "F", 5: "G", 4: "H",
+            34: "I", 38: "J", 40: "K", 37: "L", 46: "M", 45: "N", 31: "O", 35: "P",
+            12: "Q", 15: "R", 1: "S", 17: "T", 32: "U", 9: "V", 13: "W", 7: "X", 16: "Y", 6: "Z",
+            49: "Space", 53: "Esc",
+        ]
+        return names[keyCode] ?? "Key \(keyCode)"
+    }
+}
+
+/// Registers system-wide keyboard shortcuts.
+///
+/// Carbon's RegisterEventHotKey rather than an NSEvent global monitor: it needs
+/// no accessibility permission, and it works while a game holds the keyboard,
+/// which is the entire point of these shortcuts.
+/// Marked unchecked because Carbon hands the manager back to us through an
+/// opaque context pointer, which strict concurrency cannot reason about. Every
+/// member is only ever touched on the main thread.
+public final class HotKeyManager: @unchecked Sendable {
+    public enum Action: String, Codable, CaseIterable, Sendable {
+        case toggleMute
+        case toggleEffect
+        case nextPreset
+        case previousPreset
+        case stopSoundboard
+        case playSlot0, playSlot1, playSlot2, playSlot3, playSlot4, playSlot5
+        case playSlot6, playSlot7, playSlot8, playSlot9, playSlot10, playSlot11
+
+        public var displayName: String {
+            switch self {
+            case .toggleMute:      return "Mute microphone"
+            case .toggleEffect:    return "Toggle voice effect"
+            case .nextPreset:      return "Next preset"
+            case .previousPreset:  return "Previous preset"
+            case .stopSoundboard:  return "Stop all sounds"
+            default:               return "Play slot \(slotIndex.map { $0 + 1 } ?? 0)"
+            }
+        }
+
+        public var slotIndex: Int? {
+            guard rawValue.hasPrefix("playSlot") else { return nil }
+            return Int(rawValue.dropFirst("playSlot".count))
+        }
+    }
+
+    /// Invoked on the main thread. Carbon dispatches hot key events on the
+    /// main run loop, so the isolation below is an assertion of what already
+    /// holds rather than a hop.
+    public var handler: (@MainActor (Action) -> Void)?
+
+    private var registrations: [Action: EventHotKeyRef] = [:]
+    private var identifiers: [UInt32: Action] = [:]
+    private var nextIdentifier: UInt32 = 1
+    private var eventHandler: EventHandlerRef?
+
+    public init() {
+        installEventHandler()
+    }
+
+    deinit {
+        unregisterAll()
+        if let eventHandler {
+            RemoveEventHandler(eventHandler)
+        }
+    }
+
+    private func installEventHandler() {
+        var spec = EventTypeSpec(
+            eventClass: OSType(kEventClassKeyboard),
+            eventKind: UInt32(kEventHotKeyPressed)
+        )
+        let context = Unmanaged.passUnretained(self).toOpaque()
+
+        InstallEventHandler(GetApplicationEventTarget(), { _, event, userData in
+            guard let event, let userData else { return noErr }
+            let manager = Unmanaged<HotKeyManager>.fromOpaque(userData).takeUnretainedValue()
+
+            var identifier = EventHotKeyID()
+            let status = GetEventParameter(
+                event,
+                EventParamName(kEventParamDirectObject),
+                EventParamType(typeEventHotKeyID),
+                nil,
+                MemoryLayout<EventHotKeyID>.size,
+                nil,
+                &identifier
+            )
+            guard status == noErr, let action = manager.identifiers[identifier.id] else {
+                return noErr
+            }
+
+            MainActor.assumeIsolated { manager.handler?(action) }
+            return noErr
+        }, 1, &spec, context, &eventHandler)
+    }
+
+    @discardableResult
+    public func register(_ hotKey: HotKey, for action: Action) -> Bool {
+        unregister(action)
+
+        let identifier = nextIdentifier
+        nextIdentifier += 1
+
+        var reference: EventHotKeyRef?
+        let hotKeyID = EventHotKeyID(signature: OSType(0x4B555241), id: identifier) // 'KURA'
+        let status = RegisterEventHotKey(
+            hotKey.keyCode,
+            hotKey.modifiers,
+            hotKeyID,
+            GetApplicationEventTarget(),
+            0,
+            &reference
+        )
+
+        guard status == noErr, let reference else { return false }
+        registrations[action] = reference
+        identifiers[identifier] = action
+        return true
+    }
+
+    public func unregister(_ action: Action) {
+        guard let reference = registrations.removeValue(forKey: action) else { return }
+        UnregisterEventHotKey(reference)
+        identifiers = identifiers.filter { $0.value != action }
+    }
+
+    public func unregisterAll() {
+        for action in registrations.keys { unregister(action) }
+    }
+
+    public static let defaults: [Action: HotKey] = [
+        .toggleMute:   HotKey(keyCode: 122, modifiers: 0),                       // F1
+        .toggleEffect: HotKey(keyCode: 120, modifiers: 0),                       // F2
+        .previousPreset: HotKey(keyCode: 99, modifiers: 0),                      // F3
+        .nextPreset:   HotKey(keyCode: 118, modifiers: 0),                       // F4
+        .stopSoundboard: HotKey(keyCode: 96, modifiers: 0),                      // F5
+    ]
+}
