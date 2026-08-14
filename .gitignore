@@ -1,0 +1,8 @@
+.DS_Store
+build/
+.build/
+*.o
+*.dSYM/
+
+# AI-generated planning/spec docs
+docs/superpowers/
