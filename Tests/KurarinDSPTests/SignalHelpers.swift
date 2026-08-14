@@ -54,20 +54,37 @@ enum Signal {
         let maxLag = min(Int(sampleRate / minimumHz), samples.count - 1)
         guard maxLag > minLag else { return nil }
 
-        var bestLag = -1
-        var bestScore: Float = 0
+        // Normalised cross-correlation. Dividing by the overlap length instead
+        // would inflate the score as the lag grows and make every reading an
+        // octave too low.
+        var scores = [Float](repeating: 0, count: maxLag + 1)
         for lag in minLag...maxLag {
-            var score: Float = 0
+            var product: Float = 0
+            var energyA: Float = 0
+            var energyB: Float = 0
             for i in 0..<(samples.count - lag) {
-                score += samples[i] * samples[i + lag]
+                product += samples[i] * samples[i + lag]
+                energyA += samples[i] * samples[i]
+                energyB += samples[i + lag] * samples[i + lag]
             }
-            score /= Float(samples.count - lag)
-            if score > bestScore {
-                bestScore = score
-                bestLag = lag
-            }
+            let denominator = sqrtf(energyA * energyB)
+            scores[lag] = denominator > 0 ? product / denominator : 0
         }
-        guard bestLag > 0 else { return nil }
-        return sampleRate / Float(bestLag)
+
+        let best = scores[minLag...maxLag].max() ?? 0
+        guard best > 0 else { return nil }
+
+        // A periodic signal correlates just as well at every multiple of its
+        // period, so take the shortest lag that is essentially as good. Require
+        // an actual local maximum: the rising flank into a strong peak also
+        // clears the threshold and would report a period that is simply too
+        // short.
+        for lag in (minLag + 1)..<maxLag
+        where scores[lag] >= best * 0.9
+            && scores[lag] >= scores[lag - 1]
+            && scores[lag] >= scores[lag + 1] {
+            return sampleRate / Float(lag)
+        }
+        return nil
     }
 }
