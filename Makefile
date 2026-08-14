@@ -35,7 +35,11 @@ $(APP_BINARY): $(shell find Sources -name '*.swift' 2>/dev/null) Resources/App-I
 	@if [ -d .build/release/Kurarin_KurarinPresets.bundle ]; then \
 		cp -R .build/release/Kurarin_KurarinPresets.bundle $(APP_BUNDLE)/Contents/Resources/; \
 	fi
-	codesign --force --sign - --timestamp=none $(APP_BUNDLE)
+	# Finder tags a new .app bundle with metadata that codesign refuses to
+	# sign over, and it can reappear between commands, so the clear and the
+	# signing happen in one shell invocation. This xattr has no -r flag.
+	find $(APP_BUNDLE) -exec xattr -c {} + && \
+		codesign --force --sign - --timestamp=none $(APP_BUNDLE)
 
 # --- checks ---------------------------------------------------------------
 
