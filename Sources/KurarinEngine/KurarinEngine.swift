@@ -23,7 +23,6 @@ public final class KurarinEngine {
     /// Plain stores of a Bool or a Float are atomic on every platform the app
     /// runs on, and the worst case is that a change lands one block later.
     public var isMuted = false
-    public var isBypassed = false
     public var monitorVoice = false
     public var monitorGain: Float = 1
     public var systemCaptureGain: Float = 1
@@ -46,6 +45,7 @@ public final class KurarinEngine {
     private var voiceBuffer: UnsafeMutablePointer<Float>
     private var soundboardBuffer: UnsafeMutablePointer<Float>
     private var tapBuffer: UnsafeMutablePointer<Float>
+    private var mixBuffer: UnsafeMutablePointer<Float>
     private let limiter: Limiter
 
     public init(sampleRate: Double = 48000) {
@@ -55,9 +55,11 @@ public final class KurarinEngine {
         voiceBuffer = .allocate(capacity: KurarinEngine.maximumFrames)
         soundboardBuffer = .allocate(capacity: KurarinEngine.maximumFrames)
         tapBuffer = .allocate(capacity: KurarinEngine.maximumFrames)
+        mixBuffer = .allocate(capacity: KurarinEngine.maximumFrames)
         voiceBuffer.initialize(repeating: 0, count: KurarinEngine.maximumFrames)
         soundboardBuffer.initialize(repeating: 0, count: KurarinEngine.maximumFrames)
         tapBuffer.initialize(repeating: 0, count: KurarinEngine.maximumFrames)
+        mixBuffer.initialize(repeating: 0, count: KurarinEngine.maximumFrames)
     }
 
     deinit {
@@ -65,6 +67,7 @@ public final class KurarinEngine {
         voiceBuffer.deallocate()
         soundboardBuffer.deallocate()
         tapBuffer.deallocate()
+        mixBuffer.deallocate()
     }
 
     /// Total delay from microphone to virtual device, in seconds.
@@ -172,6 +175,7 @@ public final class KurarinEngine {
             voiceBuffer[i] = 0
             soundboardBuffer[i] = 0
             tapBuffer[i] = 0
+            mixBuffer[i] = 0
         }
 
         if let input {
@@ -198,27 +202,29 @@ public final class KurarinEngine {
 
         if isMuted {
             for i in 0..<frames { voiceBuffer[i] = 0 }
-            // The chain still runs so its delay lines stay primed; unmuting
-            // then resumes cleanly instead of starting from a cold filter.
-            chain.process(voiceBuffer, frameCount: frames)
+        }
+        // The chain runs even while muted so its delay lines stay primed and
+        // unmuting resumes cleanly rather than from cold filters. Bypassing the
+        // effect is a matter of applying neutral parameters, not of skipping
+        // the chain, which would jump the stream by the shifter's latency.
+        chain.process(voiceBuffer, frameCount: frames)
+        if isMuted {
             for i in 0..<frames { voiceBuffer[i] = 0 }
-        } else if isBypassed {
-            chain.process(voiceBuffer, frameCount: frames)
-        } else {
-            chain.process(voiceBuffer, frameCount: frames)
         }
 
         soundboard.render(into: soundboardBuffer, frameCount: frames)
 
+        // The three sources stay in their own buffers up to this point, because
+        // the two destinations want different combinations of them.
         let captureGain = systemCaptureGain
         for i in 0..<frames {
-            voiceBuffer[i] += soundboardBuffer[i] + tapBuffer[i] * captureGain
+            mixBuffer[i] = voiceBuffer[i] + soundboardBuffer[i] + tapBuffer[i] * captureGain
         }
-        limiter.process(voiceBuffer, frameCount: frames)
-        outputLevel = peak(voiceBuffer, frames: frames)
+        limiter.process(mixBuffer, frameCount: frames)
+        outputLevel = peak(mixBuffer, frames: frames)
 
         write(
-            voiceBuffer,
+            mixBuffer,
             into: outputList,
             channelOffset: layout.virtualOutputOffset,
             channelCount: layout.virtualChannels,
@@ -227,20 +233,21 @@ public final class KurarinEngine {
         )
 
         if layout.monitorChannels > 0 {
-            // The tap is deliberately absent here. Captured applications are
-            // still playing through the same speakers, so echoing them back
-            // would double every sound the user hears.
-            let gain = monitorGain
+            // Monitoring gets the soundboard, and the voice only on request.
+            // The tap is deliberately excluded: those applications are already
+            // playing through these same headphones, so echoing them back would
+            // double every sound the user hears.
+            let includeVoice = monitorVoice
             for i in 0..<frames {
-                soundboardBuffer[i] += monitorVoice ? (voiceBuffer[i] - soundboardBuffer[i]) : 0
+                mixBuffer[i] = soundboardBuffer[i] + (includeVoice ? voiceBuffer[i] : 0)
             }
             write(
-                soundboardBuffer,
+                mixBuffer,
                 into: outputList,
                 channelOffset: layout.monitorOutputOffset,
                 channelCount: layout.monitorChannels,
                 frames: frames,
-                gain: gain
+                gain: monitorGain
             )
         }
     }
