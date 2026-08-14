@@ -3,7 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "Kurarin",
-    platforms: [.macOS(.v14)],
+    platforms: [.macOS("14.2")],
     products: [
         .executable(name: "KurarinApp", targets: ["KurarinApp"]),
         .library(name: "KurarinDSP", targets: ["KurarinDSP"]),

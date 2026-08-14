@@ -36,11 +36,18 @@ public final class ParametricEQ: AudioProcessor {
         applyBands()
     }
 
-    /// Not real-time safe: recomputes coefficients. Call from the parameter
-    /// update path, not from `process`.
+    /// Updates the band settings.
+    ///
+    /// Writes into the existing storage element by element rather than
+    /// replacing the array. The audio thread reads `bands` while the control
+    /// thread writes it, and replacing the array would move its buffer out from
+    /// under that read. Element-wise stores of plain floats can at worst be seen
+    /// half-applied for one block, which is inaudible.
     public func setBands(_ newBands: [Band]) {
         guard newBands.count == bands.count else { return }
-        bands = newBands
+        for index in bands.indices {
+            bands[index] = newBands[index]
+        }
         applyBands()
     }
 
