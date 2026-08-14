@@ -9,13 +9,15 @@ let package = Package(
         .library(name: "KurarinDSP", targets: ["KurarinDSP"]),
     ],
     targets: [
+        .target(name: "KurarinAtomics"),
         .target(name: "KurarinDSP"),
         .target(name: "KurarinPresets", dependencies: ["KurarinDSP"]),
-        .target(name: "KurarinSoundboard", dependencies: ["KurarinDSP"]),
+        .target(name: "KurarinSoundboard", dependencies: ["KurarinDSP", "KurarinAtomics"]),
         .target(name: "KurarinEngine", dependencies: ["KurarinDSP", "KurarinPresets", "KurarinSoundboard"]),
         .executableTarget(name: "KurarinApp", dependencies: ["KurarinEngine", "KurarinPresets", "KurarinSoundboard"]),
 
         .testTarget(name: "KurarinDSPTests", dependencies: ["KurarinDSP"]),
         .testTarget(name: "KurarinPresetsTests", dependencies: ["KurarinPresets"]),
+        .testTarget(name: "KurarinSoundboardTests", dependencies: ["KurarinSoundboard"]),
     ]
 )
