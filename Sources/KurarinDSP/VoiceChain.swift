@@ -13,6 +13,7 @@ public final class VoiceChain {
 
     private let gate: NoiseGate
     private let suppressor: TransientSuppressor
+    private let denoiser: NoiseReducer
     private let highPass: Biquad
     private var shifter: VoiceShifter
     /// One analysis, shared. The gate uses it to know a held note is still a
@@ -43,6 +44,7 @@ public final class VoiceChain {
 
         gate = NoiseGate(sampleRate: sampleRate)
         suppressor = TransientSuppressor(sampleRate: sampleRate)
+        denoiser = NoiseReducer(sampleRate: sampleRate)
         highPass = Biquad(sampleRate: sampleRate)
         shifter = VoiceShifter(sampleRate: sampleRate, latencyMode: latencyMode, tracker: tracker)
         breath = BreathGenerator(sampleRate: sampleRate)
@@ -83,6 +85,7 @@ public final class VoiceChain {
         gate.enabled = clamped.gateEnabled
         gate.thresholdDB = clamped.gateThresholdDB
         suppressor.strength = clamped.clickSuppression
+        denoiser.strength = clamped.noiseReduction
 
         if clamped.highPassHz != appliedHighPassHz {
             highPass.configure(kind: .highpass, frequency: clamped.highPassHz, q: 0.707)
@@ -166,6 +169,7 @@ public final class VoiceChain {
         tracker.reset()
         samplesSinceAnalysis = 0
         suppressor.reset()
+        denoiser.reset()
         breath.reset()
         speakerPitchHz = 0
         voicedSeconds = 0
@@ -195,12 +199,17 @@ public final class VoiceChain {
         suppressor.isVoiced = voiced
         gate.isVoiced = voiced
         breath.isVoiced = voiced
+        denoiser.isVoiced = voiced
         updatePitchRatioForTarget(voiced: voiced, frameCount: frameCount)
 
         // Clicks first: a key press is loud enough to hold a gate open, and
         // removing it before the gate decides anything keeps the two from
         // arguing.
         suppressor.process(buffer, frameCount: frameCount)
+        // Steady noise next, before the gate: with the room tone already taken
+        // out, the gate has a much clearer difference between speech and
+        // silence to work with, and can sit at a gentler threshold.
+        denoiser.process(buffer, frameCount: frameCount)
         gate.process(buffer, frameCount: frameCount)
         highPass.process(buffer, frameCount: frameCount)
         shifter.process(buffer, frameCount: frameCount)

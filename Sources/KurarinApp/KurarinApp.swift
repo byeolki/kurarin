@@ -444,6 +444,15 @@ struct VoiceTab: View {
 
                 Section("Cleanup") {
                     VStack(alignment: .leading, spacing: 2) {
+                        Slider(value: $model.editedParameters.noiseReduction, in: 0...1) {
+                            Text("Background noise")
+                        }
+                        Text("Fans, air conditioning, computer hum, preamp hiss — the noise a gate can only cut between words. It learns the room while you are not speaking, so give it a second of quiet after starting.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    VStack(alignment: .leading, spacing: 2) {
                         Slider(value: $model.editedParameters.clickSuppression, in: 0...1) {
                             Text("Click and key noise")
                         }
