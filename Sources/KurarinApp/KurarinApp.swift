@@ -132,18 +132,79 @@ struct StatusBar: View {
     }
 }
 
+/// A level meter on a decibel scale.
+///
+/// Hearing is logarithmic and so are microphones. A voice at a perfectly
+/// healthy -12 dBFS is an amplitude of 0.25, which on a linear bar looks like
+/// almost nothing, and a quiet-but-usable -30 dB — where a USB microphone with
+/// its gain knob down sits — is 3% of the width and reads as "broken". The
+/// scale runs from -60 dB, below which nothing is worth showing, to 0.
 struct LevelMeter: View {
     let label: String
     let level: Float
 
+    /// A marker that hangs behind the bar, so a peak can be read after it has
+    /// passed. Optional: only the input meter is something the user is aiming.
+    var peak: Float?
+    /// Shades the range a speaking voice should be landing in, which turns
+    /// "how loud should this be" into "put the bar in the green".
+    var showsTarget = false
+    var width: CGFloat = 70
+
+    private static let floorDB: Float = -60
+
+    private var decibels: Float {
+        level > 0 ? 20 * log10(level) : -.infinity
+    }
+
+    private func position(ofDB db: Float) -> Double {
+        Double(min(max((db - LevelMeter.floorDB) / -LevelMeter.floorDB, 0), 1))
+    }
+
+    private var position: Double {
+        decibels.isFinite ? position(ofDB: decibels) : 0
+    }
+
     var body: some View {
         HStack(spacing: 4) {
             Text(label).font(.caption).foregroundStyle(.secondary)
-            ProgressView(value: Double(min(level, 1)))
-                .frame(width: 70)
-                // Clipping is what a listener notices first, so the meter turns
-                // red before the signal actually reaches full scale.
-                .tint(level > 0.9 ? .red : .accentColor)
+
+            GeometryReader { geometry in
+                let full = geometry.size.width
+                ZStack(alignment: .leading) {
+                    Capsule().fill(.quaternary)
+
+                    if showsTarget {
+                        let range = AppModel.comfortableRangeDB
+                        let start = position(ofDB: range.lowerBound) * full
+                        let end = position(ofDB: range.upperBound) * full
+                        Rectangle()
+                            .fill(.green.opacity(0.25))
+                            .frame(width: end - start)
+                            .offset(x: start)
+                    }
+
+                    Capsule()
+                        .fill(decibels > -3 ? Color.red : Color.accentColor)
+                        .frame(width: position * full)
+
+                    if let peak, peak > 0 {
+                        let peakDB = 20 * log10(peak)
+                        Rectangle()
+                            .fill(peakDB > -3 ? Color.red : Color.primary.opacity(0.6))
+                            .frame(width: 2)
+                            .offset(x: max(0, position(ofDB: peakDB) * full - 2))
+                    }
+                }
+                .clipShape(Capsule())
+            }
+            .frame(width: width, height: 8)
+
+            Text(decibels.isFinite ? String(format: "%.0f", decibels) : "–")
+                .font(.caption2)
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+                .frame(width: 24, alignment: .trailing)
         }
     }
 }
@@ -174,6 +235,43 @@ struct DevicesTab: View {
                     ForEach(model.inputDevices) { device in
                         Text(device.name).tag(String?.some(device.uid))
                     }
+                }
+
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack {
+                        Text("Microphone gain")
+                        Spacer()
+                        Text(String(format: "%+.0f dB", model.inputTrimDB))
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                    }
+                    Slider(value: $model.inputTrimDB, in: -12...36)
+
+                    HStack(spacing: 10) {
+                        LevelMeter(
+                            label: "In",
+                            level: model.inputLevel,
+                            peak: model.inputPeak,
+                            showsTarget: true,
+                            width: 150
+                        )
+
+                        if model.calibrationRemaining > 0 {
+                            Button("Cancel") { model.cancelCalibration() }
+                                .controlSize(.small)
+                            Text("Listening — speak normally…")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            Button("Set from my voice") { model.calibrateInputGain() }
+                                .controlSize(.small)
+                                .disabled(!model.isRunning)
+                        }
+                    }
+
+                    Text("Talk normally and land the bar in the green. Many USB microphones have no software volume, so this is the only place to correct a quiet one.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
 

@@ -1,7 +1,18 @@
 import Foundation
 import CoreAudio
+import os
 import KurarinDSP
 import KurarinSoundboard
+
+/// Routing problems are invisible from the interface: a wrong channel offset
+/// and a device that never started both look like a meter that does not move.
+/// These go to the unified log, so `log stream --predicate 'subsystem ==
+/// "com.byeolki.kurarin"'` says what the engine actually did.
+///
+/// Nothing here is called from the audio thread — os_log takes locks and can
+/// allocate. What the callback has to report, it reports through counters the
+/// main thread reads.
+let engineLog = Logger(subsystem: "com.byeolki.kurarin", category: "engine")
 
 /// Owns the audio graph: one callback on one aggregate device.
 ///
@@ -27,6 +38,14 @@ public final class KurarinEngine {
     public var monitorGain: Float = 1
     public var systemCaptureGain: Float = 1
 
+    /// Correction for the microphone itself, applied before anything else.
+    ///
+    /// Belongs to the device rather than to a preset: how much gain a
+    /// particular microphone needs is a fact about the hardware, and many USB
+    /// microphones expose no software volume at all, so without this a quiet
+    /// one has to be compensated for again in every preset the user owns.
+    public var inputTrim: Float = 1
+
     public private(set) var isRunning = false
     public private(set) var configuration = Configuration()
 
@@ -35,9 +54,32 @@ public final class KurarinEngine {
     /// feature, so it is reported rather than thrown.
     public private(set) var captureFailure: String?
 
-    /// Peak levels for the meters, updated once per callback.
+    /// Highest peak since the last read, not the peak of the last callback.
+    ///
+    /// The callback runs about ninety times a second and the interface reads
+    /// thirty times a second, so reporting only the most recent block throws
+    /// away two thirds of the peaks — including, often, the loudest part of a
+    /// syllable. Holding the maximum means a level that is read late is still
+    /// the level that happened, and it stops the two meters from appearing to
+    /// move in a different order each time, which is an artefact of sampling
+    /// two fast-moving values at a slower rate.
     public private(set) var inputLevel: Float = 0
     public private(set) var outputLevel: Float = 0
+
+    /// Reads both meters and starts a fresh hold. Main thread only.
+    public func drainLevels() -> (input: Float, output: Float) {
+        let levels = (inputLevel, outputLevel)
+        inputLevel = 0
+        outputLevel = 0
+        // Accumulated for the log, which runs right after a drain and would
+        // otherwise only ever see the sliver of a block that arrived since.
+        loggedInputPeak = max(loggedInputPeak, levels.0)
+        loggedOutputPeak = max(loggedOutputPeak, levels.1)
+        return levels
+    }
+
+    private var loggedInputPeak: Float = 0
+    private var loggedOutputPeak: Float = 0
 
     public let soundboard = SoundboardMixer()
     public private(set) var chain: VoiceChain
@@ -115,6 +157,18 @@ public final class KurarinEngine {
             }
         }
 
+        engineLog.notice("""
+            starting: microphone=\(microphone.name, privacy: .public) \
+            (\(microphone.inputChannels)in/\(microphone.outputChannels)out) \
+            monitor=\(configuration.monitor?.name ?? "none", privacy: .public) \
+            (\(configuration.monitor?.outputChannels ?? 0)out) \
+            capture=\(configuration.captureSource == nil ? "off" : "on", privacy: .public) \
+            rate=\(configuration.sampleRate)
+            """)
+        if let captureFailure {
+            engineLog.error("system capture unavailable: \(captureFailure, privacy: .public)")
+        }
+
         let device = try AggregateDevice(
             microphone: microphone,
             virtualDevice: virtualDevice,
@@ -124,6 +178,18 @@ public final class KurarinEngine {
         )
         aggregate = device
 
+        let layout = device.layout
+        engineLog.notice("""
+            aggregate \(device.deviceID) built: \
+            mic in \(layout.microphoneInputOffset)..<\
+            \(layout.microphoneInputOffset + layout.microphoneChannels), \
+            tap in \(layout.tapInputOffset)..<\(layout.tapInputOffset + layout.tapChannels), \
+            virtual out \(layout.virtualOutputOffset)..<\
+            \(layout.virtualOutputOffset + layout.virtualChannels), \
+            monitor out \(layout.monitorOutputOffset)..<\
+            \(layout.monitorOutputOffset + layout.monitorChannels)
+            """)
+
         var procID: AudioDeviceIOProcID?
         let status = AudioDeviceCreateIOProcIDWithBlock(&procID, device.deviceID, nil) {
             [weak self] _, inputData, _, outputData, _ in
@@ -131,6 +197,7 @@ public final class KurarinEngine {
             self.render(input: inputData, output: outputData)
         }
         guard status == noErr, let procID else {
+            engineLog.error("installing the render callback failed: \(status)")
             aggregate = nil
             throw AudioDeviceError.coreAudio(status, "Installing the render callback")
         }
@@ -138,6 +205,7 @@ public final class KurarinEngine {
 
         let startStatus = AudioDeviceStart(device.deviceID, procID)
         guard startStatus == noErr else {
+            engineLog.error("starting the aggregate failed: \(startStatus)")
             AudioDeviceDestroyIOProcID(device.deviceID, procID)
             ioProcID = nil
             aggregate = nil
@@ -145,6 +213,28 @@ public final class KurarinEngine {
         }
 
         isRunning = true
+        engineLog.notice("engine running")
+    }
+
+    /// What the callback has seen, for the interface to report. Written by the
+    /// audio thread, read by the main thread; both are plain word-sized stores,
+    /// and a count that is one block stale tells the same story.
+    public private(set) var callbackCount = 0
+    public private(set) var lastFrameCount = 0
+    public private(set) var lastInputChannelCount = 0
+
+    /// A line describing what the audio thread is actually doing. Called from
+    /// the main thread on a timer, never from the callback.
+    public func logActivity() {
+        guard isRunning else { return }
+        engineLog.notice("""
+            callbacks=\(self.callbackCount) frames=\(self.lastFrameCount) \
+            inputChannels=\(self.lastInputChannelCount) \
+            peakIn=\(String(format: "%.4f", self.loggedInputPeak), privacy: .public) \
+            peakOut=\(String(format: "%.4f", self.loggedOutputPeak), privacy: .public)
+            """)
+        loggedInputPeak = 0
+        loggedOutputPeak = 0
     }
 
     public func stop() {
@@ -170,6 +260,7 @@ public final class KurarinEngine {
     ) {
         guard let aggregate else { return }
         let layout = aggregate.layout
+        callbackCount += 1
 
         let outputList = UnsafeMutableAudioBufferListPointer(output)
         guard let frames = outputList.first.map({
@@ -178,6 +269,7 @@ public final class KurarinEngine {
             ChannelRouter.silence(outputList)
             return
         }
+        lastFrameCount = frames
 
         // Start from silence: an early return anywhere below must leave the
         // virtual device quiet rather than replaying whatever was in the buffer.
@@ -192,6 +284,10 @@ public final class KurarinEngine {
 
         if let input {
             let inputList = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: input))
+            // Recorded rather than logged: if this is zero the aggregate handed
+            // the callback no input at all, which is a different problem from
+            // reading the wrong channels out of it.
+            lastInputChannelCount = inputList.reduce(0) { $0 + Int($1.mNumberChannels) }
             ChannelRouter.readMono(
                 from: inputList,
                 channelOffset: layout.microphoneInputOffset,
@@ -210,7 +306,15 @@ public final class KurarinEngine {
             }
         }
 
-        inputLevel = peak(voiceBuffer, frames: frames)
+        // Trim first, so the meter shows what the rest of the chain is working
+        // with — including the gate, which is the thing most likely to be
+        // deciding a quiet microphone is silence.
+        let trim = inputTrim
+        if trim != 1 {
+            for i in 0..<frames { voiceBuffer[i] *= trim }
+        }
+
+        inputLevel = max(inputLevel, peak(voiceBuffer, frames: frames))
 
         if isMuted {
             for i in 0..<frames { voiceBuffer[i] = 0 }
@@ -233,7 +337,7 @@ public final class KurarinEngine {
             mixBuffer[i] = voiceBuffer[i] + soundboardBuffer[i] + tapBuffer[i] * captureGain
         }
         limiter.process(mixBuffer, frameCount: frames)
-        outputLevel = peak(mixBuffer, frames: frames)
+        outputLevel = max(outputLevel, peak(mixBuffer, frames: frames))
 
         ChannelRouter.write(
             mixBuffer,

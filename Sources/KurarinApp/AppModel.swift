@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import os
 import CoreAudio
 import SwiftUI
 import UniformTypeIdentifiers
@@ -8,6 +9,10 @@ import KurarinDSP
 import KurarinEngine
 import KurarinPresets
 import KurarinSoundboard
+
+/// Anything worth explaining after the fact goes here rather than only into the
+/// status bar, which is gone the moment it is replaced.
+let appLog = Logger(subsystem: "com.byeolki.kurarin", category: "app")
 
 /// An app that can be captured, with the name and icon the user knows it by.
 struct CapturableApp: Identifiable, Equatable {
@@ -58,6 +63,58 @@ final class AppModel: ObservableObject {
             defaults.set(captureGain, forKey: Keys.captureGain)
         }
     }
+    /// Listens for a few seconds and sets the gain so the loudest thing heard
+    /// lands on the target.
+    ///
+    /// Reading a meter while dragging a slider is a two-handed job, and the
+    /// answer is arithmetic: the difference between the peak of a normal
+    /// speaking voice and where that peak should be is exactly how much gain
+    /// is missing.
+    func calibrateInputGain() {
+        guard isRunning else {
+            statusMessage = "Start the engine before setting the microphone gain."
+            return
+        }
+        calibrationPeak = 0
+        calibrationRemaining = 30 * 4      // four seconds of meter polls
+    }
+
+    func cancelCalibration() {
+        calibrationRemaining = 0
+        calibrationPeak = 0
+    }
+
+    private func finishCalibration() {
+        defer { calibrationPeak = 0 }
+
+        guard calibrationPeak > 0 else {
+            statusMessage = "Heard nothing. Check the microphone and try again."
+            return
+        }
+        let heardDB = 20 * log10(calibrationPeak)
+        guard heardDB > -60 else {
+            statusMessage = "Heard almost nothing — speak while it listens."
+            return
+        }
+
+        // The trim is already in the measurement, so the correction is added to
+        // it rather than replacing it.
+        let corrected = inputTrimDB + (AppModel.targetPeakDB - heardDB)
+        inputTrimDB = min(max(corrected, -12), 36)
+        statusMessage = String(
+            format: "Microphone gain set to %+.0f dB — your voice peaked at %.0f dB.",
+            inputTrimDB, heardDB
+        )
+    }
+
+    /// Microphone correction in decibels. A device-level setting, not part of
+    /// a preset: it describes the hardware, not the voice.
+    @Published var inputTrimDB: Float = 0 {
+        didSet {
+            engine.inputTrim = powf(10, inputTrimDB / 20)
+            defaults.set(inputTrimDB, forKey: Keys.inputTrim)
+        }
+    }
     @Published private(set) var capturedBundleIDs: Set<String> = []
     @Published private(set) var audioProcesses: [CapturableApp] = []
 
@@ -75,6 +132,21 @@ final class AppModel: ObservableObject {
 
     @Published private(set) var inputLevel: Float = 0
     @Published private(set) var outputLevel: Float = 0
+    /// Falls far more slowly than the bar, so a peak stays readable.
+    @Published private(set) var inputPeak: Float = 0
+
+    /// Polls remaining in a calibration run, and the loudest thing heard so far.
+    @Published private(set) var calibrationRemaining = 0
+    private var calibrationPeak: Float = 0
+
+    /// Where a speaking voice should peak. Loud enough to sit well above the
+    /// noise floor and the gate, with room left for a shout before the limiter
+    /// has to do anything about it.
+    static let targetPeakDB: Float = -12
+    static let comfortableRangeDB: ClosedRange<Float> = -18 ... -6
+
+    private static let meterFall: Float = 0.82
+    private static let peakFall: Float = 0.99
 
     @Published var hotKeys: [HotKeyManager.Action: HotKey] = HotKeyManager.defaults
     /// The action currently listening for a key press, if any. Published so
@@ -86,6 +158,7 @@ final class AppModel: ObservableObject {
     private let hotKeyManager = HotKeyManager()
     private let defaults = UserDefaults.standard
     private var meterTimer: Timer?
+    private var meterTicks = 0
     private var slotSaveTimer: Timer?
     private var deviceObserver: AudioDevices.Observer?
     /// Held by UID, not by object: a device that has been unplugged in the
@@ -100,6 +173,7 @@ final class AppModel: ObservableObject {
         static let latency = "latencyMode"
         static let capture = "captureMode"
         static let captureGain = "captureGain"
+        static let inputTrim = "inputTrimDB"
         static let capturedApps = "capturedBundleIDs"
         static let preset = "selectedPreset"
         static let slots = "soundboardSlots"
@@ -203,6 +277,7 @@ final class AppModel: ObservableObject {
         refreshDevices()
         guard isDriverInstalled else {
             statusMessage = AudioDeviceError.driverNotInstalled.localizedDescription
+            appLog.error("start refused: the virtual device is not installed")
             return
         }
 
@@ -224,6 +299,7 @@ final class AppModel: ObservableObject {
             engine.isMuted = isMuted
             engine.monitorVoice = monitorVoice
             engine.systemCaptureGain = captureGain
+            engine.inputTrim = powf(10, inputTrimDB / 20)
             applyCurrentPreset()
             reloadAllSlots()
             isRunning = true
@@ -251,6 +327,7 @@ final class AppModel: ObservableObject {
         } catch {
             isRunning = false
             statusMessage = error.localizedDescription
+            appLog.error("start failed: \(error.localizedDescription, privacy: .public)")
         }
     }
 
@@ -320,8 +397,31 @@ final class AppModel: ObservableObject {
 
     private func pollMeters() {
         guard isRunning else { return }
-        inputLevel = engine.inputLevel
-        outputLevel = engine.outputLevel
+
+        let levels = engine.drainLevels()
+        // Ballistics: jump to a new peak, fall back gently. An instantaneous
+        // meter flickers too fast to read; one that only rises never comes
+        // down. These are the conventional shapes — the bar follows the
+        // signal, the peak marker hangs behind it long enough to be read.
+        inputLevel = max(levels.input, inputLevel * AppModel.meterFall)
+        outputLevel = max(levels.output, outputLevel * AppModel.meterFall)
+        inputPeak = max(levels.input, inputPeak * AppModel.peakFall)
+
+        if calibrationRemaining > 0 {
+            calibrationPeak = max(calibrationPeak, levels.input)
+            calibrationRemaining -= 1
+            if calibrationRemaining == 0 { finishCalibration() }
+        }
+
+        // Once a second, a line in the log saying whether the audio thread is
+        // running at all and what it can see. A meter that does not move looks
+        // the same whether the callback is idle, the input is silent, or the
+        // wrong channels are being read, and only one of those is visible from
+        // here.
+        meterTicks += 1
+        if meterTicks % 30 == 0 {
+            engine.logActivity()
+        }
     }
 
     // MARK: - Presets
@@ -608,6 +708,7 @@ final class AppModel: ObservableObject {
         defaults.set(latencyMode.rawValue, forKey: Keys.latency)
         defaults.set(captureMode.rawValue, forKey: Keys.capture)
         defaults.set(captureGain, forKey: Keys.captureGain)
+        defaults.set(inputTrimDB, forKey: Keys.inputTrim)
         defaults.set(Array(capturedBundleIDs), forKey: Keys.capturedApps)
         defaults.set(takeOverSystemInput, forKey: Keys.takeOver)
 
@@ -630,6 +731,9 @@ final class AppModel: ObservableObject {
         }
         if defaults.object(forKey: Keys.captureGain) != nil {
             captureGain = defaults.float(forKey: Keys.captureGain)
+        }
+        if defaults.object(forKey: Keys.inputTrim) != nil {
+            inputTrimDB = defaults.float(forKey: Keys.inputTrim)
         }
         if let stored = defaults.stringArray(forKey: Keys.capturedApps) {
             capturedBundleIDs = Set(stored)

@@ -11,6 +11,30 @@ FRAMEWORKS     := -framework CoreAudio -framework CoreFoundation
 
 .PHONY: all driver app test clean install-driver uninstall-driver
 
+# Clears the extended attributes off a bundle and signs it, retrying because
+# clearing them is not final.
+#
+# codesign refuses to sign anything carrying Finder metadata, and a build
+# directory inside iCloud Drive gets that metadata put back within
+# milliseconds of it being removed — often between the clear and the signature.
+# A quarantine flag is worse than a failed signature: coreaudiod skips a
+# quarantined plug-in during its scan, logs nothing, and the device simply
+# never appears. So both are cleared, and the pair is attempted until it takes.
+# (xattr has no -r flag, hence find.)
+define sign_bundle
+	@attempt=1; \
+	while [ $$attempt -le 8 ]; do \
+		find $(1) -exec xattr -c {} + 2>/dev/null; \
+		if codesign --force --sign - --timestamp=none $(1) 2>/dev/null; then \
+			echo "signed $(1)"; \
+			exit 0; \
+		fi; \
+		attempt=$$((attempt + 1)); \
+	done; \
+	echo "error: could not sign $(1); Finder metadata kept coming back" >&2; \
+	exit 1
+endef
+
 all: driver app
 
 # --- virtual audio driver -------------------------------------------------
@@ -21,13 +45,7 @@ $(DRIVER_BINARY): Driver/KurarinDriver.c Driver/Info.plist
 	@mkdir -p $(DRIVER_BUNDLE)/Contents/MacOS
 	cp Driver/Info.plist $(DRIVER_BUNDLE)/Contents/Info.plist
 	clang $(CFLAGS) -bundle $(FRAMEWORKS) -o $@ Driver/KurarinDriver.c
-	# A quarantined plug-in is not merely refused, it is never looked at:
-	# coreaudiod skips it during its scan and says nothing about why. The
-	# attribute arrives on its own — a build directory inside iCloud Drive is
-	# enough — so it is cleared here as well as at install time. xattr has no
-	# -r, hence find.
-	find $(DRIVER_BUNDLE) -exec xattr -c {} + && \
-		codesign --force --sign - --timestamp=none $(DRIVER_BUNDLE)
+	$(call sign_bundle,$(DRIVER_BUNDLE))
 
 # --- application ----------------------------------------------------------
 
@@ -41,11 +59,7 @@ $(APP_BINARY): $(shell find Sources -name '*.swift' 2>/dev/null) Resources/App-I
 	@mkdir -p $(APP_BUNDLE)/Contents/MacOS $(APP_BUNDLE)/Contents/Resources
 	cp Resources/App-Info.plist $(APP_BUNDLE)/Contents/Info.plist
 	cp .build/apple/Products/Release/KurarinApp $@
-	# Finder tags a new .app bundle with metadata that codesign refuses to
-	# sign over, and it can reappear between commands, so the clear and the
-	# signing happen in one shell invocation. This xattr has no -r flag.
-	find $(APP_BUNDLE) -exec xattr -c {} + && \
-		codesign --force --sign - --timestamp=none $(APP_BUNDLE)
+	$(call sign_bundle,$(APP_BUNDLE))
 
 # --- checks ---------------------------------------------------------------
 
