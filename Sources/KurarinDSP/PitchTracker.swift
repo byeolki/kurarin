@@ -29,8 +29,11 @@ public final class PitchTracker {
     private let antiAlias1: Biquad
     private let antiAlias2: Biquad
 
-    /// Decimated history, long enough for one analysis window plus the longest lag.
+    /// Decimated history, long enough for one analysis window plus the longest
+    /// lag. Twice that is allocated so appending is a store rather than a shift;
+    /// see `appendToHistory`.
     private var history: [Float]
+    private let historySpan: Int
     private var historyFill: Int = 0
     private var decimationPhase: Int = 0
     private var filterScratch: [Float]
@@ -62,7 +65,8 @@ public final class PitchTracker {
         antiAlias1.configure(kind: .lowpass, frequency: min(2000, sampleRate * 0.2), q: 0.541)
         antiAlias2.configure(kind: .lowpass, frequency: min(2000, sampleRate * 0.2), q: 1.307)
 
-        history = [Float](repeating: 0, count: windowSize + maximumLag)
+        historySpan = windowSize + maximumLag
+        history = [Float](repeating: 0, count: historySpan * 2)
         filterScratch = [Float](repeating: 0, count: 4096)
         difference = [Float](repeating: 0, count: maximumLag + 1)
         normalised = [Float](repeating: 0, count: maximumLag + 1)
@@ -102,22 +106,30 @@ public final class PitchTracker {
         }
     }
 
+    /// Appends one decimated sample, keeping the analysis window contiguous.
+    ///
+    /// YIN's inner loop is O(window × lag) and runs over this buffer, so the
+    /// window has to be laid out flat — a wrap-around ring would put an index
+    /// wrap inside the hottest loop in the project. The compromise is twice the
+    /// storage: samples are appended until the far end is reached, and only
+    /// then is the tail copied back to the front. That makes appending a plain
+    /// store, with one bulk copy per span of samples rather than a copy of the
+    /// whole span per sample.
     private func appendToHistory(_ sample: Float) {
-        if historyFill < history.count {
-            history[historyFill] = sample
-            historyFill += 1
-        } else {
-            // Shift by one. The history is a few hundred samples and this runs
-            // at a quarter of the sample rate, so memmove is cheap enough to
-            // prefer over the index arithmetic a wrap-around ring would need
-            // inside the O(window × lag) inner loop below.
+        if historyFill == history.count {
             history.withUnsafeMutableBufferPointer { buffer in
                 guard let base = buffer.baseAddress else { return }
-                base.update(from: base + 1, count: buffer.count - 1)
-                base[buffer.count - 1] = sample
+                base.update(from: base + historySpan, count: historySpan)
             }
+            historyFill = historySpan
         }
+
+        history[historyFill] = sample
+        historyFill += 1
     }
+
+    /// Index of the oldest sample in the current analysis window.
+    private var windowStart: Int { max(0, historyFill - historySpan) }
 
     /// Runs one estimate over the most recent history.
     ///
@@ -125,14 +137,16 @@ public final class PitchTracker {
     /// unvoiced the previous period is left in place, so callers that want a
     /// plausible period during a fricative can keep using it.
     public func analyse() {
-        guard historyFill >= history.count else {
+        guard historyFill >= historySpan else {
             isVoiced = false
             confidence = 0
             return
         }
 
+        let start = windowStart
         history.withUnsafeBufferPointer { historyBuffer in
-            guard let x = historyBuffer.baseAddress else { return }
+            guard let base = historyBuffer.baseAddress else { return }
+            let x = base + start
             difference.withUnsafeMutableBufferPointer { diffBuffer in
                 normalised.withUnsafeMutableBufferPointer { normBuffer in
                     guard let d = diffBuffer.baseAddress, let dPrime = normBuffer.baseAddress else { return }

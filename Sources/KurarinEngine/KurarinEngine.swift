@@ -175,13 +175,13 @@ public final class KurarinEngine {
         guard let frames = outputList.first.map({
             Int($0.mDataByteSize) / (MemoryLayout<Float>.size * Int(max($0.mNumberChannels, 1)))
         }), frames > 0, frames <= KurarinEngine.maximumFrames else {
-            silence(outputList)
+            ChannelRouter.silence(outputList)
             return
         }
 
         // Start from silence: an early return anywhere below must leave the
         // virtual device quiet rather than replaying whatever was in the buffer.
-        silence(outputList)
+        ChannelRouter.silence(outputList)
 
         for i in 0..<frames {
             voiceBuffer[i] = 0
@@ -192,7 +192,7 @@ public final class KurarinEngine {
 
         if let input {
             let inputList = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: input))
-            readMono(
+            ChannelRouter.readMono(
                 from: inputList,
                 channelOffset: layout.microphoneInputOffset,
                 channelCount: layout.microphoneChannels,
@@ -200,7 +200,7 @@ public final class KurarinEngine {
                 frames: frames
             )
             if layout.tapChannels > 0 {
-                readMono(
+                ChannelRouter.readMono(
                     from: inputList,
                     channelOffset: layout.tapInputOffset,
                     channelCount: layout.tapChannels,
@@ -235,7 +235,7 @@ public final class KurarinEngine {
         limiter.process(mixBuffer, frameCount: frames)
         outputLevel = peak(mixBuffer, frames: frames)
 
-        write(
+        ChannelRouter.write(
             mixBuffer,
             into: outputList,
             channelOffset: layout.virtualOutputOffset,
@@ -253,7 +253,7 @@ public final class KurarinEngine {
             for i in 0..<frames {
                 mixBuffer[i] = soundboardBuffer[i] + (includeVoice ? voiceBuffer[i] : 0)
             }
-            write(
+            ChannelRouter.write(
                 mixBuffer,
                 into: outputList,
                 channelOffset: layout.monitorOutputOffset,
@@ -261,14 +261,6 @@ public final class KurarinEngine {
                 frames: frames,
                 gain: monitorGain
             )
-        }
-    }
-
-    private func silence(_ list: UnsafeMutableAudioBufferListPointer) {
-        for buffer in list {
-            if let data = buffer.mData {
-                memset(data, 0, Int(buffer.mDataByteSize))
-            }
         }
     }
 
@@ -281,81 +273,4 @@ public final class KurarinEngine {
         return result.isFinite ? result : 0
     }
 
-    /// Sums a range of the aggregate's channels down to mono.
-    ///
-    /// The buffer list may be one interleaved buffer or one buffer per
-    /// sub-device, so channels are located by walking the list rather than
-    /// indexing a single block.
-    private func readMono(
-        from list: UnsafeMutableAudioBufferListPointer,
-        channelOffset: Int,
-        channelCount: Int,
-        into destination: UnsafeMutablePointer<Float>,
-        frames: Int
-    ) {
-        guard channelCount > 0 else { return }
-
-        var cursor = 0
-        var copied = 0
-        for buffer in list {
-            let channels = Int(buffer.mNumberChannels)
-            guard channels > 0, let data = buffer.mData else { continue }
-
-            let bufferStart = cursor
-            cursor += channels
-            guard cursor > channelOffset, bufferStart < channelOffset + channelCount else { continue }
-
-            let samples = data.assumingMemoryBound(to: Float.self)
-            let available = Int(buffer.mDataByteSize) / (MemoryLayout<Float>.size * channels)
-            let usable = min(frames, available)
-
-            let first = max(channelOffset - bufferStart, 0)
-            let last = min(channelOffset + channelCount - bufferStart, channels)
-            for channel in first..<last {
-                for frame in 0..<usable {
-                    destination[frame] += samples[frame * channels + channel]
-                }
-                copied += 1
-            }
-        }
-
-        if copied > 1 {
-            let scale = 1 / Float(copied)
-            for frame in 0..<frames { destination[frame] *= scale }
-        }
-    }
-
-    /// Writes a mono signal to every channel in a range.
-    private func write(
-        _ source: UnsafePointer<Float>,
-        into list: UnsafeMutableAudioBufferListPointer,
-        channelOffset: Int,
-        channelCount: Int,
-        frames: Int,
-        gain: Float
-    ) {
-        guard channelCount > 0 else { return }
-
-        var cursor = 0
-        for buffer in list {
-            let channels = Int(buffer.mNumberChannels)
-            guard channels > 0, let data = buffer.mData else { continue }
-
-            let bufferStart = cursor
-            cursor += channels
-            guard cursor > channelOffset, bufferStart < channelOffset + channelCount else { continue }
-
-            let samples = data.assumingMemoryBound(to: Float.self)
-            let available = Int(buffer.mDataByteSize) / (MemoryLayout<Float>.size * channels)
-            let usable = min(frames, available)
-
-            let first = max(channelOffset - bufferStart, 0)
-            let last = min(channelOffset + channelCount - bufferStart, channels)
-            for channel in first..<last {
-                for frame in 0..<usable {
-                    samples[frame * channels + channel] = source[frame] * gain
-                }
-            }
-        }
-    }
 }

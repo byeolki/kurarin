@@ -19,5 +19,6 @@ let package = Package(
         .testTarget(name: "KurarinDSPTests", dependencies: ["KurarinDSP"]),
         .testTarget(name: "KurarinPresetsTests", dependencies: ["KurarinPresets"]),
         .testTarget(name: "KurarinSoundboardTests", dependencies: ["KurarinSoundboard"]),
+        .testTarget(name: "KurarinEngineTests", dependencies: ["KurarinEngine"]),
     ]
 )

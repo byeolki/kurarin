@@ -84,11 +84,15 @@ static Float64 HostTicksPerSecond(void)
     return sTicksPerSecond;
 }
 
+// Built on the cached tick rate rather than caching the timebase struct here.
+// Two IO threads reaching an uninitialised two-field cache at the same moment
+// can see one field written and the other not, and the not-yet-written one is
+// the divisor — a division by zero inside coreaudiod. A single scalar cache
+// has no such window: the worst two threads can do is compute the same value
+// twice.
 static uint64_t NanosToHostTicks(uint64_t inNanos)
 {
-    struct mach_timebase_info info;
-    mach_timebase_info(&info);
-    return (inNanos * info.denom) / info.numer;
+    return (uint64_t)((Float64)inNanos * HostTicksPerSecond() / 1000000000.0);
 }
 
 #pragma mark - Prototypes
@@ -1029,12 +1033,24 @@ static OSStatus Kurarin_GetZeroTimeStamp(AudioServerPlugInDriverRef inDriver, Au
 
     // Advance the anchor by whole periods until it sits ahead of the current
     // host time. The device is virtual, so its clock is simply the host clock.
-    if (ticksPerPeriod > 0.0) {
-        while ((Float64)(now - gAnchorHostTime) >= ticksPerPeriod) {
-            gAnchorHostTime += (UInt64)ticksPerPeriod;
-            gAnchorSampleTime += kZeroTimeStampPeriod;
-            ++gTimestampCount;
+    //
+    // Both guards matter more than they look. An anchor ahead of the clock
+    // makes the unsigned subtraction wrap to something astronomical, and this
+    // loop runs inside coreaudiod: spinning here does not hang Kurarin, it
+    // hangs audio for the whole machine. The anchor is only ever set from the
+    // clock, so neither case should arise — which is exactly why it must be
+    // cheap to survive one.
+    if (ticksPerPeriod > 0.0 && now >= gAnchorHostTime) {
+        UInt64 elapsed = now - gAnchorHostTime;
+        UInt64 periods = (UInt64)((Float64)elapsed / ticksPerPeriod);
+        if (periods > 0) {
+            gAnchorHostTime += (UInt64)((Float64)periods * ticksPerPeriod);
+            gAnchorSampleTime += periods * kZeroTimeStampPeriod;
+            gTimestampCount += periods;
         }
+    } else if (now < gAnchorHostTime) {
+        // Re-anchor rather than reason about how it happened.
+        gAnchorHostTime = now;
     }
 
     *outSampleTime = (Float64)gAnchorSampleTime;
@@ -1082,9 +1098,12 @@ static OSStatus Kurarin_DoIOOperation(AudioServerPlugInDriverRef inDriver, Audio
     Float32* buffer = (Float32*)ioMainBuffer;
 
     if (inOperationID == kAudioServerPlugInIOOperationWriteMix) {
-        UInt64 start = (UInt64)inIOCycleInfo->mOutputTime.mSampleTime;
+        // Via a signed integer: converting a negative Float64 straight to an
+        // unsigned type is undefined, and a sample time is not guaranteed to be
+        // positive on the first cycles of a stream.
+        SInt64 start = (SInt64)inIOCycleInfo->mOutputTime.mSampleTime;
         for (UInt32 frame = 0; frame < inIOBufferFrameSize; ++frame) {
-            UInt64 slot = (start + frame) & kRingMask;
+            UInt64 slot = (UInt64)((start + (SInt64)frame) & (SInt64)kRingMask);
             for (UInt32 ch = 0; ch < kChannelCount; ++ch) {
                 gRing[slot * kChannelCount + ch] = buffer[frame * kChannelCount + ch];
             }
@@ -1106,9 +1125,9 @@ static OSStatus Kurarin_DoIOOperation(AudioServerPlugInDriverRef inDriver, Audio
             return 0;
         }
 
-        UInt64 start = (UInt64)inIOCycleInfo->mInputTime.mSampleTime;
+        SInt64 start = (SInt64)inIOCycleInfo->mInputTime.mSampleTime;
         for (UInt32 frame = 0; frame < inIOBufferFrameSize; ++frame) {
-            UInt64 slot = (start + frame) & kRingMask;
+            UInt64 slot = (UInt64)((start + (SInt64)frame) & (SInt64)kRingMask);
             for (UInt32 ch = 0; ch < kChannelCount; ++ch) {
                 buffer[frame * kChannelCount + ch] = gRing[slot * kChannelCount + ch];
             }

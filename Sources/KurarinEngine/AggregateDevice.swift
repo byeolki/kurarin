@@ -54,13 +54,14 @@ public final class AggregateDevice {
 
         // Order here is the channel order in the aggregate's buffers, so the
         // offsets computed below have to follow the same sequence.
-        var subDeviceUIDs: [String] = [microphone.uid, virtualDevice.uid]
-        if let monitor, monitor.uid != microphone.uid, monitor.uid != virtualDevice.uid {
-            subDeviceUIDs.append(monitor.uid)
-        }
+        let subDeviceOrder = AggregateDevice.subDeviceOrder(
+            microphone: microphone,
+            virtualDevice: virtualDevice,
+            monitor: monitor
+        )
 
         var subDevices: [[String: Any]] = []
-        for uid in subDeviceUIDs {
+        for uid in subDeviceOrder.map(\.uid) {
             var entry: [String: Any] = [kAudioSubDeviceUIDKey: uid]
             if uid != microphone.uid {
                 // The master clock needs no correction; everything else does.
@@ -96,9 +97,10 @@ public final class AggregateDevice {
         deviceID = created
 
         layout = AggregateDevice.computeLayout(
+            subDevices: subDeviceOrder,
             microphone: microphone,
             virtualDevice: virtualDevice,
-            monitor: subDeviceUIDs.count > 2 ? monitor : nil,
+            monitor: monitor,
             tapChannels: tap != nil ? 2 : 0
         )
     }
@@ -120,37 +122,62 @@ public final class AggregateDevice {
 
     /// Channels appear in the order the sub-devices were listed, with tap
     /// channels appended after them.
-    private static func computeLayout(
+    ///
+    /// Pure, and therefore the one part of building an aggregate that can be
+    /// checked without one existing. Getting an offset wrong here is silent:
+    /// the engine reads a real device's real audio, just the wrong device's.
+    /// The sub-devices in the order the aggregate will hold them, each listed
+    /// once. A device can play more than one role — a USB headset is the
+    /// microphone and the monitoring output at the same time.
+    static func subDeviceOrder(
+        microphone: AudioDeviceInfo,
+        virtualDevice: AudioDeviceInfo,
+        monitor: AudioDeviceInfo?
+    ) -> [AudioDeviceInfo] {
+        var devices = [microphone, virtualDevice]
+        if let monitor, monitor.uid != microphone.uid, monitor.uid != virtualDevice.uid {
+            devices.append(monitor)
+        }
+        return devices
+    }
+
+    static func computeLayout(
+        subDevices: [AudioDeviceInfo],
         microphone: AudioDeviceInfo,
         virtualDevice: AudioDeviceInfo,
         monitor: AudioDeviceInfo?,
         tapChannels: Int
     ) -> Layout {
         var layout = Layout()
-
         var inputCursor = 0
-        layout.microphoneInputOffset = inputCursor
-        layout.microphoneChannels = microphone.inputChannels
-        inputCursor += microphone.inputChannels
+        var outputCursor = 0
 
-        inputCursor += virtualDevice.inputChannels
-        inputCursor += monitor?.inputChannels ?? 0
+        // Walking the list rather than adding up the roles is what makes a
+        // device in two roles work: a headset appears once, and its output
+        // channels are where monitoring goes even though the same entry is
+        // also the microphone.
+        for device in subDevices {
+            if device.uid == microphone.uid {
+                layout.microphoneInputOffset = inputCursor
+                layout.microphoneChannels = device.inputChannels
+            }
+            if device.uid == virtualDevice.uid {
+                layout.virtualOutputOffset = outputCursor
+                layout.virtualChannels = device.outputChannels
+            } else if let monitor, device.uid == monitor.uid {
+                // Never the virtual device: monitoring through the microphone
+                // other applications are reading would overwrite the mix meant
+                // for them with the one meant for the user's ears.
+                layout.monitorOutputOffset = outputCursor
+                layout.monitorChannels = device.outputChannels
+            }
+
+            inputCursor += device.inputChannels
+            outputCursor += device.outputChannels
+        }
 
         layout.tapInputOffset = inputCursor
         layout.tapChannels = tapChannels
-
-        var outputCursor = 0
-        outputCursor += microphone.outputChannels
-
-        layout.virtualOutputOffset = outputCursor
-        layout.virtualChannels = virtualDevice.outputChannels
-        outputCursor += virtualDevice.outputChannels
-
-        if let monitor {
-            layout.monitorOutputOffset = outputCursor
-            layout.monitorChannels = monitor.outputChannels
-        }
-
         return layout
     }
 }
