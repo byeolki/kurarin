@@ -182,7 +182,9 @@ final class AppModel: ObservableObject {
 
         stop()
         start()
-        if statusMessage == nil {
+        // Only when the restart worked: if it did not, whatever start() has to
+        // say about that matters more than which device went away.
+        if isRunning {
             statusMessage = "\(reason). Switched to the system default."
         }
     }

@@ -109,6 +109,11 @@ public final class HotKeyManager: @unchecked Sendable {
     /// toggle flaps the microphone open and shut for as long as the finger
     /// stays there.
     private var heldActions: Set<Action> = []
+    /// When each action was last seen, so a lost release cannot wedge a
+    /// shortcut off for the session. Key repeat arrives far faster than this
+    /// gap, so holding a key still never fires twice.
+    private var lastEventTime: [Action: TimeInterval] = [:]
+    private static let repeatGap: TimeInterval = 0.5
     private var nextIdentifier: UInt32 = 1
     private var eventHandler: EventHandlerRef?
 
@@ -155,13 +160,23 @@ public final class HotKeyManager: @unchecked Sendable {
                 return noErr
             }
 
+            let now = Foundation.ProcessInfo.processInfo.systemUptime
+            let previous = manager.lastEventTime[action]
+            manager.lastEventTime[action] = now
+
             if GetEventKind(event) == UInt32(kEventHotKeyReleased) {
                 manager.heldActions.remove(action)
                 return noErr
             }
 
-            // One action per press, however long the key is held.
-            guard manager.heldActions.insert(action).inserted else { return noErr }
+            // One action per press, however long the key is held — unless the
+            // gap since the last event is longer than any key repeat, which
+            // means the release went missing and this really is a new press.
+            let isRepeat = manager.heldActions.contains(action)
+                && now - (previous ?? 0) < HotKeyManager.repeatGap
+            manager.heldActions.insert(action)
+            guard !isRepeat else { return noErr }
+
             MainActor.assumeIsolated { manager.handler?(action) }
             return noErr
         }, specs.count, &specs, context, &eventHandler)

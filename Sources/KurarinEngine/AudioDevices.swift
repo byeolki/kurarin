@@ -272,11 +272,10 @@ public enum AudioDevices {
     private static let hasAnnounced = OSAllocatedUnfairLock(initialState: false)
 
     static func announceProcessToHAL() {
-        let alreadyDone = hasAnnounced.withLock { done -> Bool in
-            defer { done = true }
-            return done
-        }
-        guard !alreadyDone else { return }
+        // Latched only once it has actually run: a device that was missing or a
+        // start that failed must not disable system capture for the rest of the
+        // process's life.
+        guard !hasAnnounced.withLock({ $0 }) else { return }
         guard let device = virtualDevice() ?? defaultOutputDevice() else { return }
 
         var procID: AudioDeviceIOProcID?
@@ -294,6 +293,7 @@ public enum AudioDevices {
             // Long enough for a callback to have run on any sane buffer size.
             usleep(50_000)
             AudioDeviceStop(device.id, procID)
+            hasAnnounced.withLock { $0 = true }
         }
         AudioDeviceDestroyIOProcID(device.id, procID)
     }

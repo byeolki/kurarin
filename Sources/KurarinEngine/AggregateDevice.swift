@@ -226,7 +226,8 @@ public final class SystemAudioTap {
     static func ownProcessObjects() -> [AudioObjectID] {
         if let object = processObject(for: getpid()) { return [object] }
         AudioDevices.announceProcessToHAL()
-        return processObject(for: getpid()).map { [$0] } ?? []
+        guard let object = processObject(for: getpid()) else { return [] }
+        return [object]
     }
 
     private static func processObject(for pid: pid_t) -> AudioObjectID? {
