@@ -64,10 +64,5 @@ public final class Drive: AudioProcessor {
 
             buffer[i] = dry + (wet - dry) * blend
         }
-
-        // The sample-and-hold carries the last value across blocks, so a
-        // denormal arriving from upstream would sit here being multiplied for
-        // as long as the downsampler keeps holding it.
-        holdValue = withoutDenormals(holdValue)
     }
 }
