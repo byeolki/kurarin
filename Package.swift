@@ -10,7 +10,7 @@ let package = Package(
     ],
     targets: [
         .target(name: "KurarinAtomics"),
-        .target(name: "KurarinDSP"),
+        .target(name: "KurarinDSP", dependencies: ["KurarinAtomics"]),
         .target(name: "KurarinPresets", dependencies: ["KurarinDSP"]),
         .target(name: "KurarinSoundboard", dependencies: ["KurarinDSP", "KurarinAtomics"]),
         .target(name: "KurarinEngine", dependencies: ["KurarinDSP", "KurarinPresets", "KurarinSoundboard"]),
