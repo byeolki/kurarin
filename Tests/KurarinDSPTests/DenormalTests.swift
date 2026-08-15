@@ -127,3 +127,35 @@ private final class ChainAdapter: AudioProcessor {
         chain.process(buffer, frameCount: frameCount)
     }
 }
+
+/// Behaviour around the reverb being switched off, which is what a preset
+/// change does.
+final class ReverbBypassTests: XCTestCase {
+    func testTurningTheReverbOffAndBackOnDoesNotReviveTheOldTail() {
+        let reverb = Reverb(sampleRate: Signal.sampleRate)
+        reverb.roomSize = 0.85
+        reverb.damping = 0.3
+        reverb.mix = 1
+
+        // A room full of sound.
+        _ = processStreaming(reverb, Signal.sine(frequency: 300, frames: 24000))
+
+        // Off — as a preset without reverb leaves it.
+        reverb.mix = 0
+        let whileOff = processStreaming(reverb, Signal.silence(frames: 4800))
+        XCTAssertEqual(Signal.peak(whileOff), 0, "a reverb that is off must be silent")
+
+        // Back on, with nothing going in. Whatever comes out is the old room.
+        reverb.mix = 1
+        let afterReturning = processStreaming(reverb, Signal.silence(frames: 24000))
+        XCTAssertEqual(Signal.peak(afterReturning), 0, "the previous tail came back")
+    }
+
+    func testTurningItOffDoesNotDisturbTheDrySignal() {
+        let reverb = Reverb(sampleRate: Signal.sampleRate)
+        reverb.mix = 0
+
+        let input = Signal.sine(frequency: 440, frames: 4800)
+        XCTAssertEqual(processStreaming(reverb, input), input)
+    }
+}

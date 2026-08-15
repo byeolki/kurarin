@@ -67,6 +67,9 @@ public final class Reverb: AudioProcessor {
 
     private let combs: [Comb]
     private let allpasses: [Allpass]
+    /// Whether the tail currently holds anything. Only used to know that it
+    /// needs emptying when the reverb is turned off.
+    private var isRinging = false
 
     public init(sampleRate: Float) {
         // The tunings above are quoted for 44.1 kHz; scale so the room keeps
@@ -79,11 +82,23 @@ public final class Reverb: AudioProcessor {
     public func reset() {
         combs.forEach { $0.reset() }
         allpasses.forEach { $0.reset() }
+        isRinging = false
     }
 
     public func process(_ buffer: UnsafeMutablePointer<Float>, frameCount: Int) {
         let blend = min(max(mix, 0), 1)
-        guard blend > 0.0001 else { return }
+        guard blend > 0.0001 else {
+            // Turning the reverb down stops the delay lines where they are, and
+            // without this they would still be holding that audio the next time
+            // it is turned up — a preset switched away from and back to would
+            // play a burst of the room it was in a minute ago. Emptying them
+            // costs one pass over the lines, once, on the way out.
+            if isRinging {
+                reset()
+            }
+            return
+        }
+        isRinging = true
 
         let feedback = min(max(roomSize, 0), 0.98) * 0.28 + 0.7
         let damp = min(max(damping, 0), 1) * 0.4
