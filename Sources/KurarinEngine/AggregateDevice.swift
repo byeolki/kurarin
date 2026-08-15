@@ -205,8 +205,19 @@ public final class SystemAudioTap {
         uid = identifier.uuidString
     }
 
-    /// Audio object IDs of every process currently playing audio.
-    public static func audioProcesses() -> [(id: AudioObjectID, bundleID: String)] {
+    /// One process Core Audio knows about, as the tap API addresses it.
+    public struct ProcessInfo: Identifiable, Equatable, Sendable {
+        /// Audio object ID — this, not the pid, is what a tap description takes.
+        public let id: AudioObjectID
+        public let pid: pid_t
+        public let bundleID: String
+    }
+
+    /// Every process Core Audio currently accounts for, minus this one.
+    ///
+    /// Kurarin excludes itself unconditionally: capturing our own monitoring
+    /// output would feed the mix straight back into itself.
+    public static func audioProcesses() -> [ProcessInfo] {
         let address = AudioDevices.address(kAudioHardwarePropertyProcessObjectList)
         guard let size = AudioDevices.dataSize(of: AudioObjectID(kAudioObjectSystemObject), address) else {
             return []
@@ -224,6 +235,7 @@ public final class SystemAudioTap {
             return []
         }
 
+        let ownPID = getpid()
         return ids.compactMap { id in
             guard let bundleID = AudioDevices.string(
                 of: id,
@@ -231,7 +243,13 @@ public final class SystemAudioTap {
             ), !bundleID.isEmpty else {
                 return nil
             }
-            return (id, bundleID)
+            let pid = AudioDevices.value(
+                of: id,
+                AudioDevices.address(kAudioProcessPropertyPID),
+                default: pid_t(-1)
+            )
+            guard pid != ownPID else { return nil }
+            return ProcessInfo(id: id, pid: pid, bundleID: bundleID)
         }
     }
 }

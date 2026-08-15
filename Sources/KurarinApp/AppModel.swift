@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 import CoreAudio
 import SwiftUI
 import Combine
@@ -6,6 +7,24 @@ import KurarinDSP
 import KurarinEngine
 import KurarinPresets
 import KurarinSoundboard
+
+/// An app that can be captured, with the name and icon the user knows it by.
+struct CapturableApp: Identifiable, Equatable {
+    let id: AudioObjectID
+    let bundleID: String
+    let name: String
+    let icon: NSImage?
+
+    init(process: SystemAudioTap.ProcessInfo) {
+        id = process.id
+        bundleID = process.bundleID
+        // A bundle identifier is not something to show a user, so it is only the
+        // fallback for a process that is no longer running under its own name.
+        let application = NSRunningApplication(processIdentifier: process.pid)
+        name = application?.localizedName ?? process.bundleID
+        icon = application?.icon
+    }
+}
 
 @MainActor
 final class AppModel: ObservableObject {
@@ -32,6 +51,14 @@ final class AppModel: ObservableObject {
     @Published var selectedMonitorUID: String? { didSet { persistAndRestart(oldValue, selectedMonitorUID) } }
     @Published var latencyMode: LatencyMode = .balanced { didSet { persistAndRestart(oldValue, latencyMode) } }
     @Published var captureMode: CaptureMode = .off { didSet { persistAndRestart(oldValue, captureMode) } }
+    @Published var captureGain: Float = 1 {
+        didSet {
+            engine.systemCaptureGain = captureGain
+            defaults.set(captureGain, forKey: Keys.captureGain)
+        }
+    }
+    @Published private(set) var capturedBundleIDs: Set<String> = []
+    @Published private(set) var audioProcesses: [CapturableApp] = []
 
     @Published var isMuted = false { didSet { engine.isMuted = isMuted } }
     @Published var isEffectEnabled = true { didSet { applyCurrentPreset() } }
@@ -64,6 +91,8 @@ final class AppModel: ObservableObject {
         static let monitor = "monitorUID"
         static let latency = "latencyMode"
         static let capture = "captureMode"
+        static let captureGain = "captureGain"
+        static let capturedApps = "capturedBundleIDs"
         static let preset = "selectedPreset"
         static let slots = "soundboardSlots"
         static let hotKeys = "hotKeys"
@@ -174,13 +203,17 @@ final class AppModel: ObservableObject {
         switch captureMode {
         case .off:          configuration.captureSource = nil
         case .entireSystem: configuration.captureSource = .entireSystem
-        case .chosenApps:   configuration.captureSource = .processes(chosenProcessIDs)
+        case .chosenApps:
+            // A tap over no processes would only cost a permission prompt.
+            let processes = chosenProcessIDs
+            configuration.captureSource = processes.isEmpty ? nil : .processes(processes)
         }
 
         do {
             try engine.start(configuration)
             engine.isMuted = isMuted
             engine.monitorVoice = monitorVoice
+            engine.systemCaptureGain = captureGain
             applyCurrentPreset()
             reloadAllSlots()
             isRunning = true
@@ -358,8 +391,32 @@ final class AppModel: ObservableObject {
         }
     }
 
+    // MARK: - System audio capture
+
+    /// Apps that are currently playing something, newest listing first.
+    func refreshAudioProcesses() {
+        audioProcesses = SystemAudioTap.audioProcesses()
+            .map { CapturableApp(process: $0) }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    func setCaptured(_ captured: Bool, bundleID: String) {
+        if captured {
+            capturedBundleIDs.insert(bundleID)
+        } else {
+            capturedBundleIDs.remove(bundleID)
+        }
+        saveSettings()
+        restartIfRunning()
+    }
+
+    /// Bundle identifiers are what gets remembered, because a process object ID
+    /// only lasts as long as the app it belongs to. They are resolved back to
+    /// live objects here, at the moment the tap is built.
     private var chosenProcessIDs: [AudioObjectID] {
-        SystemAudioTap.audioProcesses().map(\.id)
+        SystemAudioTap.audioProcesses()
+            .filter { capturedBundleIDs.contains($0.bundleID) }
+            .map(\.id)
     }
 
     // MARK: - Hot keys
@@ -395,6 +452,8 @@ final class AppModel: ObservableObject {
         defaults.set(selectedMonitorUID, forKey: Keys.monitor)
         defaults.set(latencyMode.rawValue, forKey: Keys.latency)
         defaults.set(captureMode.rawValue, forKey: Keys.capture)
+        defaults.set(captureGain, forKey: Keys.captureGain)
+        defaults.set(Array(capturedBundleIDs), forKey: Keys.capturedApps)
         defaults.set(takeOverSystemInput, forKey: Keys.takeOver)
 
         if let data = try? JSONEncoder().encode(slots) {
@@ -413,6 +472,12 @@ final class AppModel: ObservableObject {
         }
         if let raw = defaults.string(forKey: Keys.capture), let mode = CaptureMode(rawValue: raw) {
             captureMode = mode
+        }
+        if defaults.object(forKey: Keys.captureGain) != nil {
+            captureGain = defaults.float(forKey: Keys.captureGain)
+        }
+        if let stored = defaults.stringArray(forKey: Keys.capturedApps) {
+            capturedBundleIDs = Set(stored)
         }
         if defaults.object(forKey: Keys.takeOver) != nil {
             takeOverSystemInput = defaults.bool(forKey: Keys.takeOver)

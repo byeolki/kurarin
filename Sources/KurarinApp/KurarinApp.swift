@@ -196,6 +196,15 @@ struct DevicesTab: View {
                 Text("Captured apps keep playing normally through your headphones.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+
+                if model.captureMode == .chosenApps {
+                    CapturedAppList()
+                }
+                if model.captureMode != .off {
+                    Slider(value: $model.captureGain, in: 0...2) {
+                        Text("Shared sound level")
+                    }
+                }
             }
 
             Section("Quality") {
@@ -220,6 +229,44 @@ struct DevicesTab: View {
             }
         }
         .formStyle(.grouped)
+    }
+}
+
+/// The apps whose sound is shared, chosen one by one.
+///
+/// Only processes Core Audio currently knows about can be listed, so an app
+/// that has never played a sound this session will not appear until it does.
+struct CapturedAppList: View {
+    @EnvironmentObject private var model: AppModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if model.audioProcesses.isEmpty {
+                Text("No app is playing audio right now.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(model.audioProcesses) { app in
+                    Toggle(isOn: Binding(
+                        get: { model.capturedBundleIDs.contains(app.bundleID) },
+                        set: { model.setCaptured($0, bundleID: app.bundleID) }
+                    )) {
+                        HStack(spacing: 6) {
+                            if let icon = app.icon {
+                                Image(nsImage: icon)
+                                    .resizable()
+                                    .frame(width: 16, height: 16)
+                            }
+                            Text(app.name)
+                        }
+                    }
+                }
+            }
+
+            Button("Refresh list") { model.refreshAudioProcesses() }
+                .controlSize(.small)
+        }
+        .onAppear { model.refreshAudioProcesses() }
     }
 }
 
