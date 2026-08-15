@@ -25,8 +25,29 @@ final class AggregateLayoutTests: XCTestCase {
         )
     }
 
+    /// Goes through the same ordering the aggregate is built from, so a test
+    /// cannot pass against a sub-device list the device would never produce.
+    private func layout(
+        microphone: AudioDeviceInfo,
+        virtualDevice: AudioDeviceInfo,
+        monitor: AudioDeviceInfo?,
+        tapChannels: Int
+    ) -> AggregateDevice.Layout {
+        AggregateDevice.computeLayout(
+            subDevices: AggregateDevice.subDeviceOrder(
+                microphone: microphone,
+                virtualDevice: virtualDevice,
+                monitor: monitor
+            ),
+            microphone: microphone,
+            virtualDevice: virtualDevice,
+            monitor: monitor,
+            tapChannels: tapChannels
+        )
+    }
+
     func testTypicalSetup() {
-        let layout = AggregateDevice.computeLayout(
+        let layout = layout(
             microphone: device("mic", input: 2, output: 0),
             virtualDevice: device("kurarin", input: 2, output: 2),
             monitor: device("headphones", input: 0, output: 2),
@@ -49,7 +70,7 @@ final class AggregateLayoutTests: XCTestCase {
     /// A USB headset is one device with both a microphone and speakers, so its
     /// output channels come before the virtual device's.
     func testMicrophoneWithOutputsPushesTheVirtualDeviceAlong() {
-        let layout = AggregateDevice.computeLayout(
+        let layout = layout(
             microphone: device("headset", input: 1, output: 2),
             virtualDevice: device("kurarin", input: 2, output: 2),
             monitor: device("speakers", input: 0, output: 2),
@@ -64,7 +85,7 @@ final class AggregateLayoutTests: XCTestCase {
     }
 
     func testWithoutAMonitorTheTapStillFollowsTheSubDevices() {
-        let layout = AggregateDevice.computeLayout(
+        let layout = layout(
             microphone: device("mic", input: 2, output: 0),
             virtualDevice: device("kurarin", input: 2, output: 2),
             monitor: nil,
@@ -79,7 +100,7 @@ final class AggregateLayoutTests: XCTestCase {
     /// A monitor with a microphone of its own occupies input channels too, and
     /// the tap sits after all of them.
     func testMonitorWithInputsShiftsTheTap() {
-        let layout = AggregateDevice.computeLayout(
+        let layout = layout(
             microphone: device("mic", input: 2, output: 0),
             virtualDevice: device("kurarin", input: 2, output: 2),
             monitor: device("interface", input: 4, output: 2),
@@ -88,6 +109,45 @@ final class AggregateLayoutTests: XCTestCase {
 
         XCTAssertEqual(layout.tapInputOffset, 8)
         XCTAssertEqual(layout.monitorOutputOffset, 2)
+    }
+
+    /// A USB headset is the microphone and the headphones at once. It joins the
+    /// aggregate once, and monitoring has to go to that one entry's output
+    /// channels — the case where deduplicating the sub-device list used to take
+    /// monitoring out of the layout altogether and leave the user hearing
+    /// nothing.
+    func testHeadsetUsedAsBothMicrophoneAndMonitor() {
+        let headset = device("headset", input: 1, output: 2)
+        let result = layout(
+            microphone: headset,
+            virtualDevice: device("kurarin", input: 2, output: 2),
+            monitor: headset,
+            tapChannels: 2
+        )
+
+        XCTAssertEqual(result.microphoneInputOffset, 0)
+        XCTAssertEqual(result.microphoneChannels, 1)
+        XCTAssertEqual(result.monitorOutputOffset, 0)
+        XCTAssertEqual(result.monitorChannels, 2)
+        XCTAssertEqual(result.virtualOutputOffset, 2)
+        // Only the headset's one input and the virtual device's two precede it.
+        XCTAssertEqual(result.tapInputOffset, 3)
+    }
+
+    /// Monitoring through the virtual device would overwrite the mix other
+    /// applications are reading with the one meant for the user's ears.
+    func testVirtualDeviceIsNeverUsedAsTheMonitor() {
+        let virtualDevice = device("kurarin", input: 2, output: 2)
+        let result = layout(
+            microphone: device("mic", input: 2, output: 0),
+            virtualDevice: virtualDevice,
+            monitor: virtualDevice,
+            tapChannels: 0
+        )
+
+        XCTAssertEqual(result.virtualOutputOffset, 0)
+        XCTAssertEqual(result.virtualChannels, 2)
+        XCTAssertEqual(result.monitorChannels, 0)
     }
 
     /// Zero channels everywhere has to stay a no-op rather than reading channel

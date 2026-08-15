@@ -84,15 +84,15 @@ static Float64 HostTicksPerSecond(void)
     return sTicksPerSecond;
 }
 
-// Cached: this is called from the IO thread on every read cycle, and the
-// timebase cannot change while the machine is running.
+// Built on the cached tick rate rather than caching the timebase struct here.
+// Two IO threads reaching an uninitialised two-field cache at the same moment
+// can see one field written and the other not, and the not-yet-written one is
+// the divisor — a division by zero inside coreaudiod. A single scalar cache
+// has no such window: the worst two threads can do is compute the same value
+// twice.
 static uint64_t NanosToHostTicks(uint64_t inNanos)
 {
-    static struct mach_timebase_info sInfo = { 0, 0 };
-    if (sInfo.denom == 0) {
-        mach_timebase_info(&sInfo);
-    }
-    return (inNanos * sInfo.denom) / sInfo.numer;
+    return (uint64_t)((Float64)inNanos * HostTicksPerSecond() / 1000000000.0);
 }
 
 #pragma mark - Prototypes
