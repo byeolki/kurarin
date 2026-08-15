@@ -1,52 +1,143 @@
 # Kurarin
 
-A real-time voice changer for macOS. Transforms your microphone input and mixes in
-soundboard samples and system audio, then exposes the result as a virtual microphone
-that any app — Discord, Roblox, OBS — can select.
+A real-time voice changer for macOS.
 
-> Status: in development. See `docs/` for design notes (not tracked in git).
+Kurarin transforms your microphone, mixes in soundboard samples and system
+audio, and publishes the result as a virtual microphone that any application —
+Discord, Roblox, OBS, Zoom — can select like any other input device.
+
+```
+microphone ──▶ noise gate ──▶ pitch / formant shift ──▶ EQ ──▶ drive ──▶ reverb ──┐
+                                                                                  ├─▶ limiter ─┬─▶ Kurarin Microphone ─▶ Discord / Roblox / OBS
+soundboard ───────────────────────────────────────────────────────────────────────┤            │
+system audio ─────────────────────────────────────────────────────────────────────┘            └─▶ your headphones
+```
+
+> **Status:** feature complete, not yet verified end to end on a machine with
+> the driver installed. See [docs/manual-testing.md](docs/manual-testing.md) for
+> the checklist that has to pass before this is called stable.
+
+## What it does
+
+- **Pitch and formant independently.** Raising pitch alone gives you a chipmunk.
+  Formant shifting moves the resonances of the vocal tract separately, which is
+  the difference between a sped-up recording and a voice that sounds like a
+  different person.
+- **PSOLA on voiced sounds.** Voiced speech is cut and overlapped at glottal
+  period boundaries rather than pushed through a phase vocoder, which avoids the
+  metallic ringing that gives most voice changers away. Fricatives take a
+  separate path that leaves their transients intact.
+- **A soundboard that does not fight the voice.** Samples are decoded to memory
+  up front, triggered from global shortcuts, and mixed before a look-ahead
+  limiter so a meme and a shout at the same time do not clip.
+- **System audio without the routing dance.** Sound is copied from other apps
+  with a Core Audio process tap, so what you share keeps playing normally
+  through your own headphones and the volume keys keep working.
+- **Latency you choose.** 32, 42 or 52 ms end to end, trading the lowest
+  fundamental the pitch tracker can follow against delay.
 
 ## Requirements
 
-- macOS 14.2 or later (Core Audio process taps)
-- Xcode command line tools
+- macOS 14.2 or later — process taps and `CATapDescription` landed there
+- Xcode command line tools (`xcode-select --install`); no Xcode project needed
+- Administrator rights, once, to install the virtual audio device
 
-## Building
+Apple silicon and Intel are both built; the driver is a universal binary.
+
+## Build and install
 
 ```sh
-make            # builds the driver and the app into build/
-make driver     # virtual audio driver only
+git clone https://github.com/byeolki/kurarin.git
+cd kurarin
+make                                  # driver + app into build/
+sudo ./scripts/install-driver.sh      # installs the virtual microphone
+open build/Kurarin.app
+```
+
+Installing the driver copies a bundle into `/Library/Audio/Plug-Ins/HAL` and
+restarts `coreaudiod`, which interrupts audio everywhere on the machine for a
+second or two. The script reports whether the device actually registered.
+
+Other targets:
+
+```sh
+make driver     # virtual audio device only
 make app        # application only
-make test       # runs the DSP and preset test suites
+make test       # DSP, preset and soundboard test suites
+make clean
 ```
 
-## Installing the driver
-
-The virtual audio device lives in `/Library/Audio/Plug-Ins/HAL`, which requires
-administrator rights and a restart of the system audio daemon:
-
-```sh
-sudo ./scripts/install-driver.sh
-```
-
-This briefly interrupts all audio on the machine while `coreaudiod` restarts.
-To remove it:
+To remove the device again:
 
 ```sh
 sudo ./scripts/uninstall-driver.sh
 ```
 
-## Layout
+The app itself needs no installation — it runs from `build/`, or drag it to
+`/Applications`.
+
+## Using it
+
+1. Open Kurarin. It lives in the menu bar; **Settings…** opens the main window.
+2. **Devices** — pick your real microphone, and the headphones you want to
+   monitor through. Press **Start**.
+3. In Discord, Zoom or OBS, choose **Kurarin Microphone** as the input device.
+   Roblox has no microphone picker, so leave *Make Kurarin the system default
+   microphone while running* on and it will follow along. Your previous default
+   is restored when you stop.
+4. **Voice** — pick a preset, or move pitch and formant yourself and save your
+   own. Presets are plain JSON in
+   `~/Library/Application Support/Kurarin/presets`.
+5. **Soundboard** — drop audio files onto the tiles, set a volume, bind a key.
+6. **Shortcuts** — click a binding and press the combination you want. These
+   work while a game holds the keyboard and need no accessibility permission.
+
+Defaults: F1 mute, F2 toggle the effect, F3/F4 previous and next preset,
+F5 stop all sounds.
+
+### Permissions
+
+macOS asks for microphone access the first time the engine starts, and for
+audio recording permission the first time you turn on system audio capture.
+Refusing the second one disables only that feature; the voice and the soundboard
+keep working.
+
+## How it is put together
+
+Two separate products, for a reason worth stating plainly: the driver runs
+inside `coreaudiod`, so a crash there takes down audio for the entire machine
+and every fix costs an admin password and a daemon restart. The driver is
+therefore a fixed, minimal loopback with no settings and no IPC, and everything
+that can change lives in the app.
 
 | Path | Contents |
 |---|---|
-| `Driver/` | `Kurarin Microphone` — a minimal loopback HAL plug-in |
-| `Sources/KurarinDSP/` | Audio processing units (no real-time dependencies, fully testable) |
-| `Sources/KurarinEngine/` | Core Audio routing: aggregate device, process taps, render callback |
-| `Sources/KurarinSoundboard/` | Sample loading and playback |
-| `Sources/KurarinPresets/` | Parameter model and persistence |
-| `Sources/KurarinApp/` | SwiftUI menu bar app |
+| `Driver/` | `Kurarin Microphone` — a minimal loopback HAL plug-in in C |
+| `Sources/KurarinDSP/` | Processing units. No real-time dependencies, fully testable |
+| `Sources/KurarinEngine/` | Aggregate device, process tap, render callback |
+| `Sources/KurarinSoundboard/` | Sample decoding and lock-free playback |
+| `Sources/KurarinPresets/` | Parameter model and JSON persistence |
+| `Sources/KurarinApp/` | SwiftUI menu bar app and main window |
+
+[docs/architecture.md](docs/architecture.md) covers the routing, the shifter and
+the real-time rules in detail.
+
+## Testing
+
+```sh
+make test
+```
+
+The DSP is where automated tests are meaningful: synthetic signals go in,
+measured pitch, level and stability come out. Routing and the driver need
+hardware and a person, and are covered by
+[docs/manual-testing.md](docs/manual-testing.md) instead.
+
+## Contributing
+
+Bug reports and pull requests are welcome — see
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
-MIT
+MIT. See [LICENSE](LICENSE).

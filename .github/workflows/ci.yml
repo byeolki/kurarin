@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build and test
+    runs-on: macos-15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: swift --version
+
+      - name: Test
+        run: swift test
+
+      # The driver is a plain clang bundle and the app is assembled by hand, so
+      # both are worth building even though neither can be exercised here: a CI
+      # runner has no audio hardware and cannot install a HAL plug-in.
+      - name: Build driver and app
+        run: make
+
+      - name: Check the bundles came out
+        run: |
+          test -x build/Kurarin.driver/Contents/MacOS/Kurarin
+          test -x build/Kurarin.app/Contents/MacOS/Kurarin
+          lipo -info build/Kurarin.driver/Contents/MacOS/Kurarin

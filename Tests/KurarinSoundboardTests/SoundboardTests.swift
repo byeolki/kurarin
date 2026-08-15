@@ -80,6 +80,24 @@ final class SoundboardMixerTests: XCTestCase {
         XCTAssertEqual(output[63], 0.5, accuracy: 1e-6)
     }
 
+    /// Nothing drains the queue until the audio thread runs, so a caller that
+    /// installs while the engine is stopped can fill it. That has to be
+    /// reported rather than leaving a slot that looks loaded and plays nothing.
+    func testInstallReportsAFullQueue() {
+        let mixer = SoundboardMixer()
+        let sample = [Float](repeating: 0.5, count: 32)
+
+        XCTAssertTrue(mixer.install(sample, at: 0))
+        var accepted = 1
+        while mixer.install(sample, at: 0) {
+            accepted += 1
+            if accepted > 1000 { break }
+        }
+
+        XCTAssertLessThan(accepted, 1000)
+        XCTAssertFalse(mixer.install(sample, at: 0))
+    }
+
     func testStopsAtEndOfSample() {
         let mixer = SoundboardMixer()
         mixer.install([Float](repeating: 0.5, count: 32), at: 0)

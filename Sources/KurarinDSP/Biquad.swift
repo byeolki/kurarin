@@ -15,8 +15,18 @@ public final class Biquad: AudioProcessor {
         case highShelf
     }
 
-    private var b0: Float = 1, b1: Float = 0, b2: Float = 0
-    private var a1: Float = 0, a2: Float = 0
+    /// One filter's worth of coefficients, normalised by a0.
+    public struct Coefficients: Sendable, BitwiseCopyable, Equatable {
+        public var b0: Float = 1, b1: Float = 0, b2: Float = 0
+        public var a1: Float = 0, a2: Float = 0
+
+        /// Passes the signal through unchanged.
+        public static let bypass = Coefficients()
+    }
+
+    /// Published as a set, because the audio thread reads these while the UI
+    /// thread changes them and a mixed pair can make the filter blow up.
+    private let coefficients = ParameterSlot(Coefficients.bypass)
     private var z1: Float = 0, z2: Float = 0
 
     private let sampleRate: Float
@@ -89,11 +99,15 @@ public final class Biquad: AudioProcessor {
             na2 = (a + 1) - (a - 1) * cosOmega - twoSqrtAAlpha
         }
 
-        b0 = nb0 / na0
-        b1 = nb1 / na0
-        b2 = nb2 / na0
-        a1 = na1 / na0
-        a2 = na2 / na0
+        coefficients.publish(
+            Coefficients(
+                b0: nb0 / na0,
+                b1: nb1 / na0,
+                b2: nb2 / na0,
+                a1: na1 / na0,
+                a2: na2 / na0
+            )
+        )
     }
 
     public func reset() {
@@ -102,13 +116,16 @@ public final class Biquad: AudioProcessor {
     }
 
     public func process(_ buffer: UnsafeMutablePointer<Float>, frameCount: Int) {
+        // One read per block: the filter is allowed to change between blocks,
+        // never within one.
+        let c = coefficients.load()
         var s1 = z1
         var s2 = z2
         for i in 0..<frameCount {
             let x = buffer[i]
-            let y = b0 * x + s1
-            s1 = b1 * x - a1 * y + s2
-            s2 = b2 * x - a2 * y
+            let y = c.b0 * x + s1
+            s1 = c.b1 * x - c.a1 * y + s2
+            s2 = c.b2 * x - c.a2 * y
             buffer[i] = y
         }
         // Denormals decay to zero here rather than costing cycles for minutes
