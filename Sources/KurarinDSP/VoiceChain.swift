@@ -24,6 +24,16 @@ public final class VoiceChain {
     private let tracker: PitchTracker
     private var samplesSinceAnalysis = 0
     private let analysisHop: Int
+    /// Splits the harmonic part of the voice from the air above it. The two
+    /// need completely different treatment: one is repeated periodically by the
+    /// shifter, the other must never be.
+    private let splitFilters: [Biquad]
+    private var highShaper: HighBandShaper
+    private var lowScratch: [Float]
+    private var highScratch: [Float]
+    private static let maximumBlock = 8192
+
+    private let formantCorrector: FormantCorrector
     private let breath: BreathGenerator
     private let eq: ParametricEQ
     private let drive: Drive
@@ -47,6 +57,19 @@ public final class VoiceChain {
         denoiser = NoiseReducer(sampleRate: sampleRate)
         highPass = Biquad(sampleRate: sampleRate)
         shifter = VoiceShifter(sampleRate: sampleRate, latencyMode: latencyMode, tracker: tracker)
+        splitFilters = (0..<2).map { _ in
+            let filter = Biquad(sampleRate: sampleRate)
+            filter.configure(kind: .lowpass, frequency: HighBandShaper.splitHz, q: 0.707)
+            return filter
+        }
+        highShaper = HighBandShaper(
+            sampleRate: sampleRate,
+            delayFrames: VoiceShifter(sampleRate: sampleRate, latencyMode: latencyMode).latencyFrames
+        )
+        lowScratch = [Float](repeating: 0, count: VoiceChain.maximumBlock)
+        highScratch = [Float](repeating: 0, count: VoiceChain.maximumBlock)
+
+        formantCorrector = FormantCorrector(sampleRate: sampleRate)
         breath = BreathGenerator(sampleRate: sampleRate)
         eq = ParametricEQ(sampleRate: sampleRate)
         drive = Drive(sampleRate: sampleRate)
@@ -68,6 +91,10 @@ public final class VoiceChain {
         guard mode != latencyMode else { return }
         latencyMode = mode
         shifter = VoiceShifter(sampleRate: sampleRate, latencyMode: mode, tracker: tracker)
+        // The rebuilt band has to wait exactly as long as the shifted one.
+        highShaper = HighBandShaper(sampleRate: sampleRate, delayFrames: shifter.latencyFrames)
+        highShaper.formantRatio = parameters.formantRatio
+        highShaper.mix = parameters.highBandResynthesis
         apply(parameters)
     }
 
@@ -94,6 +121,10 @@ public final class VoiceChain {
 
         shifter.formantRatio = clamped.formantRatio
         breath.amount = clamped.breathiness
+        highShaper.formantRatio = clamped.formantRatio
+        highShaper.mix = clamped.highBandResynthesis
+        formantCorrector.ratio = clamped.formantRatio
+        formantCorrector.amount = clamped.formantCorrection
         // With a target set, the ratio is worked out per block from what the
         // speaker is actually doing; without one it is the parameter itself.
         if clamped.targetPitchHz <= 0 {
@@ -170,7 +201,10 @@ public final class VoiceChain {
         samplesSinceAnalysis = 0
         suppressor.reset()
         denoiser.reset()
+        splitFilters.forEach { $0.reset() }
+        highShaper.reset()
         breath.reset()
+        formantCorrector.reset()
         speakerPitchHz = 0
         voicedSeconds = 0
         gate.reset()
@@ -212,7 +246,29 @@ public final class VoiceChain {
         denoiser.process(buffer, frameCount: frameCount)
         gate.process(buffer, frameCount: frameCount)
         highPass.process(buffer, frameCount: frameCount)
-        shifter.process(buffer, frameCount: frameCount)
+        // Harmonics one way, air the other. Below the split the voice is
+        // periodic and the shifter's repetition is exactly right; above it the
+        // signal is breath and hiss, and repeating that is what makes a shifted
+        // voice buzz.
+        let frames = min(frameCount, VoiceChain.maximumBlock)
+        lowScratch.withUnsafeMutableBufferPointer { low in
+            highScratch.withUnsafeMutableBufferPointer { high in
+                guard let lowBase = low.baseAddress, let highBase = high.baseAddress else { return }
+
+                for i in 0..<frames { lowBase[i] = buffer[i] }
+                splitFilters.forEach { $0.process(lowBase, frameCount: frames) }
+                // Telescoping, so the two halves add back to the input exactly.
+                for i in 0..<frames { highBase[i] = buffer[i] - lowBase[i] }
+
+                shifter.process(lowBase, frameCount: frames)
+                highShaper.process(highBase, frameCount: frames)
+
+                for i in 0..<frames { buffer[i] = lowBase[i] + highBase[i] }
+            }
+        }
+        // Straight after the shifter, where the uniform scaling it applied is
+        // still the only thing shaping the formants.
+        formantCorrector.process(buffer, frameCount: frameCount)
         breath.process(buffer, frameCount: frameCount)
         eq.process(buffer, frameCount: frameCount)
         drive.process(buffer, frameCount: frameCount)

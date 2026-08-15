@@ -39,6 +39,14 @@ public struct VoiceParameters: Codable, Equatable, Sendable {
     /// recording of one.
     public var breathiness: Float
 
+    /// How much of the band above five kilohertz to rebuild as noise rather
+    /// than let the shifter repeat it. 0 keeps the original band.
+    public var highBandResynthesis: Float
+
+    /// How much to correct the shifter's uniform formant scaling towards the
+    /// uneven way a vocal tract actually changes size. 0 leaves it uniform.
+    public var formantCorrection: Float
+
     public var eqBands: [ParametricEQ.Band]
 
     public var driveAmount: Float
@@ -63,6 +71,8 @@ public struct VoiceParameters: Codable, Equatable, Sendable {
         formantRatio: Float = 1,
         targetPitchHz: Float = 0,
         breathiness: Float = 0,
+        highBandResynthesis: Float = 0.85,
+        formantCorrection: Float = 1,
         eqBands: [ParametricEQ.Band] = ParametricEQ.defaultBands,
         driveAmount: Float = 1,
         driveBitDepth: Float = 0,
@@ -83,6 +93,8 @@ public struct VoiceParameters: Codable, Equatable, Sendable {
         self.formantRatio = formantRatio
         self.targetPitchHz = targetPitchHz
         self.breathiness = breathiness
+        self.highBandResynthesis = highBandResynthesis
+        self.formantCorrection = formantCorrection
         self.eqBands = eqBands
         self.driveAmount = driveAmount
         self.driveBitDepth = driveBitDepth
@@ -114,6 +126,8 @@ public struct VoiceParameters: Codable, Equatable, Sendable {
         formantRatio      = value(.formantRatio, defaults.formantRatio)
         targetPitchHz     = value(.targetPitchHz, defaults.targetPitchHz)
         breathiness       = value(.breathiness, defaults.breathiness)
+        highBandResynthesis = value(.highBandResynthesis, defaults.highBandResynthesis)
+        formantCorrection = value(.formantCorrection, defaults.formantCorrection)
         eqBands           = value(.eqBands, defaults.eqBands)
         driveAmount       = value(.driveAmount, defaults.driveAmount)
         driveBitDepth     = value(.driveBitDepth, defaults.driveBitDepth)
@@ -143,6 +157,8 @@ public struct VoiceParameters: Codable, Equatable, Sendable {
         // could actually speak at.
         result.targetPitchHz = targetPitchHz <= 0 ? 0 : min(max(targetPitchHz, 60), 400)
         result.breathiness = min(max(breathiness, 0), 1)
+        result.highBandResynthesis = min(max(highBandResynthesis, 0), 1)
+        result.formantCorrection = min(max(formantCorrection, 0), 1)
         result.driveAmount = min(max(driveAmount, 1), 20)
         result.driveBitDepth = min(max(driveBitDepth, 0), 16)
         result.driveDownsampleHz = max(driveDownsampleHz, 0)
