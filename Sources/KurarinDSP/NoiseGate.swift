@@ -69,6 +69,13 @@ public final class NoiseGate: AudioProcessor {
 
             buffer[i] *= gain
         }
+
+        // Both of these approach zero exponentially while the gate is shut,
+        // which is most of the time in a quiet room. Left alone they spend the
+        // silence in the denormal range, where the arithmetic costs orders of
+        // magnitude more than it does here.
+        envelope = withoutDenormals(envelope)
+        gain = withoutDenormals(gain)
     }
 
     private func coefficient(forMilliseconds ms: Float) -> Float {

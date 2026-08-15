@@ -24,7 +24,12 @@ public final class Reverb: AudioProcessor {
 
         func process(_ input: Float, feedback: Float, damping: Float) -> Float {
             let output = buffer[index]
-            filterStore = output * (1 - damping) + filterStore * damping
+            // Flushing the damping store is enough to drain the whole comb:
+            // every value written into the delay line is computed from it, so
+            // once it is zero the line fills with exact zeros within one lap.
+            // Sweeping the line itself every block would cost eight thousand
+            // stores for the same result.
+            filterStore = withoutDenormals(output * (1 - damping) + filterStore * damping)
             buffer[index] = input + filterStore * feedback
             index = (index + 1) % buffer.count
             return output
@@ -46,7 +51,10 @@ public final class Reverb: AudioProcessor {
         func process(_ input: Float, feedback: Float) -> Float {
             let stored = buffer[index]
             let output = -input + stored
-            buffer[index] = input + stored * feedback
+            // Unlike the comb, an allpass line feeds itself directly, so the
+            // flush has to happen on the way in or the decaying values never
+            // leave it.
+            buffer[index] = withoutDenormals(input + stored * feedback)
             index = (index + 1) % buffer.count
             return output
         }
