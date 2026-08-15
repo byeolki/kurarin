@@ -443,7 +443,13 @@ struct SlotTile: View {
                                 get: { slot.volume },
                                 set: { model.setVolume($0, for: index) }
                             ),
-                            in: 0...2
+                            in: 0...2,
+                            // Saved once, when the drag ends: writing the slot
+                            // list to disk on every frame of a drag is a lot of
+                            // encoding for a value that is still moving.
+                            onEditingChanged: { editing in
+                                if !editing { model.commitSlotEdits() }
+                            }
                         )
                     }
                     Toggle("Loop", isOn: Binding(
@@ -536,6 +542,11 @@ struct HotKeyRecorder: View {
             Button(label) { isRecording ? cancel() : startRecording() }
                 .monospaced()
                 .frame(minWidth: 90)
+                // Arming another recorder disarms this one, so two local event
+                // monitors can never be installed at the same time.
+                .onChange(of: model.recordingAction) { _, current in
+                    if current != action { tearDown() }
+                }
 
             Button {
                 model.clearHotKey(for: action)
@@ -557,7 +568,7 @@ struct HotKeyRecorder: View {
 
     private func startRecording() {
         isRecording = true
-        model.beginRecordingHotKey()
+        model.beginRecordingHotKey(for: action)
 
         monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
             if event.keyCode == 53 {
@@ -580,11 +591,15 @@ struct HotKeyRecorder: View {
     }
 
     private func finish() {
+        tearDown()
+        model.endRecordingHotKey(for: action)
+    }
+
+    private func tearDown() {
         if let monitor {
             NSEvent.removeMonitor(monitor)
             self.monitor = nil
         }
         isRecording = false
-        model.endRecordingHotKey()
     }
 }

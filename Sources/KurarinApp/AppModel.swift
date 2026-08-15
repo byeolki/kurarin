@@ -77,7 +77,9 @@ final class AppModel: ObservableObject {
     @Published private(set) var outputLevel: Float = 0
 
     @Published var hotKeys: [HotKeyManager.Action: HotKey] = HotKeyManager.defaults
-    @Published private(set) var isRecordingHotKey = false
+    /// The action currently listening for a key press, if any. Published so
+    /// that arming one recorder disarms whichever one was armed before.
+    @Published private(set) var recordingAction: HotKeyManager.Action?
 
     let engine = KurarinEngine()
     private let store = PresetStore()
@@ -85,7 +87,10 @@ final class AppModel: ObservableObject {
     private let defaults = UserDefaults.standard
     private var meterTimer: Timer?
     private var deviceObserver: AudioDevices.Observer?
-    private var previousDefaultInput: AudioDeviceInfo?
+    /// Held by UID, not by object: a device that has been unplugged in the
+    /// meantime keeps its UID but gets a new object ID when it comes back, and
+    /// restoring by a stale ID silently does nothing.
+    private var previousDefaultInputUID: String?
     private var isRestoring = true
 
     private enum Keys {
@@ -225,11 +230,19 @@ final class AppModel: ObservableObject {
                 // Roblox and similar clients have no microphone picker and just
                 // follow the system default, so this is the only way to reach
                 // them. The previous choice is restored on stop.
+                // Never records the virtual device as the thing to go back to:
+                // a previous run that ended badly can leave the system already
+                // pointed at it, and restoring to it would make the recovery
+                // path preserve exactly the state it exists to undo.
                 let displaced = AudioDevices.defaultInputDevice()
-                previousDefaultInput = displaced
+                    .map(\.uid)
+                    .flatMap { $0 == AudioDevices.virtualDeviceUID ? nil : $0 }
+                previousDefaultInputUID = displaced
                 // Also on disk: if the app is killed rather than quit, the next
                 // launch is the only chance to undo this.
-                defaults.set(displaced?.uid, forKey: Keys.displacedInput)
+                if let displaced {
+                    defaults.set(displaced, forKey: Keys.displacedInput)
+                }
                 AudioDevices.setDefaultInputDevice(virtualDevice)
             }
         } catch {
@@ -244,11 +257,25 @@ final class AppModel: ObservableObject {
         inputLevel = 0
         outputLevel = 0
 
-        if let previousDefaultInput {
-            AudioDevices.setDefaultInputDevice(previousDefaultInput)
-            self.previousDefaultInput = nil
+        if let uid = previousDefaultInputUID {
+            previousDefaultInputUID = nil
+            restoreDefaultInput(preferring: uid)
         }
         defaults.removeObject(forKey: Keys.displacedInput)
+    }
+
+    /// Points the system back at a real microphone.
+    ///
+    /// Leaves a choice the user made themselves while the engine was running
+    /// alone, and falls back to any real input if the one that was displaced has
+    /// since been unplugged — anything is better than leaving the machine on a
+    /// virtual device with nothing writing to it.
+    private func restoreDefaultInput(preferring uid: String) {
+        guard AudioDevices.systemDefaultInputUID() == AudioDevices.virtualDeviceUID else { return }
+
+        let devices = AudioDevices.inputDevices()
+        guard let device = devices.first(where: { $0.uid == uid }) ?? devices.first else { return }
+        AudioDevices.setDefaultInputDevice(device)
     }
 
     /// Undoes a takeover that a previous run never got to undo.
@@ -259,7 +286,7 @@ final class AppModel: ObservableObject {
         guard let uid = defaults.string(forKey: Keys.displacedInput) else { return }
         defaults.removeObject(forKey: Keys.displacedInput)
 
-        guard AudioDevices.defaultInputDevice()?.uid == AudioDevices.virtualDeviceUID,
+        guard AudioDevices.systemDefaultInputUID() == AudioDevices.virtualDeviceUID,
               let device = inputDevices.first(where: { $0.uid == uid }) else { return }
         AudioDevices.setDefaultInputDevice(device)
     }
@@ -366,21 +393,31 @@ final class AppModel: ObservableObject {
     }
 
     func playSlot(_ index: Int) {
-        guard let slot = slots[safe: index] ?? nil else { return }
+        guard engine.isRunning, let slot = slots[safe: index] ?? nil else { return }
         engine.soundboard.play(slot: index, gain: slot.volume, loops: slot.loops)
     }
 
     func stopSlot(_ index: Int) {
+        guard engine.isRunning else { return }
         engine.soundboard.stop(slot: index)
     }
 
+    /// Live while dragging. Deliberately does not persist: `commitSlotEdits`
+    /// does that once, when the slider is released.
     func setVolume(_ volume: Float, for index: Int) {
         guard var slot = slots[safe: index] ?? nil else { return }
         slot.volume = volume
         slots[index] = slot
         // Applied to the mixer as well as the slot, so dragging the slider is
-        // audible on a sample that is already looping.
-        engine.soundboard.setGain(volume, at: index)
+        // audible on a sample that is already looping. Only while the engine is
+        // running: nothing drains the mixer's command queue otherwise, and a
+        // full queue silently drops the sample loads that follow it.
+        if engine.isRunning {
+            engine.soundboard.setGain(volume, at: index)
+        }
+    }
+
+    func commitSlotEdits() {
         saveSettings()
     }
 
@@ -412,8 +449,14 @@ final class AppModel: ObservableObject {
         guard let slot = slots[safe: index] ?? nil else { return }
         do {
             let samples = try SampleLoader.load(slot.fileURL, sampleRate: 48000)
-            engine.soundboard.install(samples, at: index)
-            slotErrors[index] = nil
+            if engine.soundboard.install(samples, at: index) {
+                slotErrors[index] = nil
+            } else {
+                // The handover queue is full, which means the audio thread has
+                // stopped draining it. Saying so beats a tile that looks loaded
+                // and plays nothing.
+                slotErrors[index] = "Could not hand the sound to the audio engine. Restart it and try again."
+            }
         } catch {
             // Surfaced on the slot itself. The audio thread never sees a file
             // that failed to load.
@@ -459,7 +502,7 @@ final class AppModel: ObservableObject {
 
     func registerHotKeys() {
         hotKeyManager.unregisterAll()
-        guard !isRecordingHotKey else { return }
+        guard recordingAction == nil else { return }
 
         var rejected: [String] = []
         for (action, hotKey) in hotKeys {
@@ -479,13 +522,16 @@ final class AppModel: ObservableObject {
     /// A registered Carbon hot key is swallowed before it reaches the
     /// application, so pressing the key being rebound would fire the action it
     /// is already bound to instead of being recorded.
-    func beginRecordingHotKey() {
-        isRecordingHotKey = true
+    func beginRecordingHotKey(for action: HotKeyManager.Action) {
+        recordingAction = action
         hotKeyManager.unregisterAll()
     }
 
-    func endRecordingHotKey() {
-        isRecordingHotKey = false
+    func endRecordingHotKey(for action: HotKeyManager.Action) {
+        // A recorder that was already superseded by another must not put the
+        // shortcuts back while that other one is still listening.
+        guard recordingAction == action else { return }
+        recordingAction = nil
         registerHotKeys()
     }
 
@@ -571,7 +617,10 @@ final class AppModel: ObservableObject {
             for (raw, hotKey) in stored {
                 if let action = HotKeyManager.Action(rawValue: raw) { restored[action] = hotKey }
             }
-            if !restored.isEmpty { hotKeys = restored }
+            // Restored even when empty: a user who cleared every shortcut meant
+            // it, and bringing the defaults back at the next launch would look
+            // like the app arguing.
+            hotKeys = restored
         }
 
         let storedPreset = defaults.string(forKey: Keys.preset).flatMap(UUID.init(uuidString:))

@@ -38,6 +38,19 @@ public enum AudioDevices {
     /// UID of the device the driver publishes. Must match KurarinDriver.c.
     public static let virtualDeviceUID = "com.byeolki.kurarin.microphone"
 
+    /// Prefix of the UIDs given to the engine's own aggregate devices. Private
+    /// aggregates are hidden from other applications but not from the process
+    /// that created them, so they have to be filtered out here or the engine's
+    /// own routing device turns up in the user's device pickers.
+    public static let aggregateUIDPrefix = "com.byeolki.kurarin.aggregate."
+
+    /// Devices Kurarin owns are never something for the user to select: routing
+    /// the engine's output back into its input is a feedback loop, and the
+    /// aggregate exists only for the lifetime of a session.
+    static func isOwnDevice(_ uid: String) -> Bool {
+        uid == virtualDeviceUID || uid.hasPrefix(aggregateUIDPrefix)
+    }
+
     static func address(
         _ selector: AudioObjectPropertySelector,
         scope: AudioObjectPropertyScope = kAudioObjectPropertyScopeGlobal
@@ -139,13 +152,11 @@ public enum AudioDevices {
     }
 
     public static func inputDevices() -> [AudioDeviceInfo] {
-        // The virtual device is excluded as an input: selecting it would feed
-        // the engine's own output back into itself.
-        allDevices().filter { $0.canRecord && $0.uid != virtualDeviceUID }
+        allDevices().filter { $0.canRecord && !isOwnDevice($0.uid) }
     }
 
     public static func outputDevices() -> [AudioDeviceInfo] {
-        allDevices().filter { $0.canPlay && $0.uid != virtualDeviceUID }
+        allDevices().filter { $0.canPlay && !isOwnDevice($0.uid) }
     }
 
     public static func virtualDevice() -> AudioDeviceInfo? {
@@ -154,13 +165,37 @@ public enum AudioDevices {
 
     public static var isDriverInstalled: Bool { virtualDevice() != nil }
 
+    /// The system's input device exactly as it is set, Kurarin's own included.
+    ///
+    /// `defaultInputDevice()` deliberately looks past our devices, which is the
+    /// right answer for "what should the engine listen to" and the wrong one for
+    /// "has the takeover already happened".
+    public static func systemDefaultInputUID() -> String? {
+        let id = value(
+            of: AudioObjectID(kAudioObjectSystemObject),
+            address(kAudioHardwarePropertyDefaultInputDevice),
+            default: AudioObjectID(0)
+        )
+        return allDevices().first { $0.id == id }?.uid
+    }
+
+    /// The system's input device, unless that is one of ours.
+    ///
+    /// Kurarin makes itself the default input on request, so by the time
+    /// anything asks this question the answer may well be the virtual device —
+    /// and feeding that back into the engine as a microphone is a loop. The
+    /// first real input device is a better answer than a broken one.
     public static func defaultInputDevice() -> AudioDeviceInfo? {
         let id = value(
             of: AudioObjectID(kAudioObjectSystemObject),
             address(kAudioHardwarePropertyDefaultInputDevice),
             default: AudioObjectID(0)
         )
-        return allDevices().first { $0.id == id }
+        let devices = allDevices()
+        if let device = devices.first(where: { $0.id == id }), !isOwnDevice(device.uid) {
+            return device
+        }
+        return devices.first { $0.canRecord && !isOwnDevice($0.uid) }
     }
 
     public static func defaultOutputDevice() -> AudioDeviceInfo? {
@@ -169,7 +204,11 @@ public enum AudioDevices {
             address(kAudioHardwarePropertyDefaultOutputDevice),
             default: AudioObjectID(0)
         )
-        return allDevices().first { $0.id == id }
+        let devices = allDevices()
+        if let device = devices.first(where: { $0.id == id }), !isOwnDevice(device.uid) {
+            return device
+        }
+        return devices.first { $0.canPlay && !isOwnDevice($0.uid) }
     }
 
     /// Points the system's default input at a device.
@@ -189,6 +228,35 @@ public enum AudioDevices {
             &id
         )
         return status == noErr
+    }
+
+    /// Makes this process visible to the HAL as an audio client.
+    ///
+    /// Core Audio creates a process object the first time a process actually
+    /// does I/O, so a freshly launched app has none — and a tap that wants to
+    /// exclude that process has nothing to name. Briefly running an empty
+    /// callback is the cheapest way to exist. Silence is written explicitly
+    /// because an output buffer arrives uninitialised.
+    static func announceProcessToHAL() {
+        guard let device = virtualDevice() ?? defaultOutputDevice() else { return }
+
+        var procID: AudioDeviceIOProcID?
+        let status = AudioDeviceCreateIOProcIDWithBlock(&procID, device.id, nil) {
+            _, _, _, outputData, _ in
+            for buffer in UnsafeMutableAudioBufferListPointer(outputData) {
+                if let data = buffer.mData {
+                    memset(data, 0, Int(buffer.mDataByteSize))
+                }
+            }
+        }
+        guard status == noErr, let procID else { return }
+
+        if AudioDeviceStart(device.id, procID) == noErr {
+            // Long enough for a callback to have run on any sane buffer size.
+            usleep(50_000)
+            AudioDeviceStop(device.id, procID)
+        }
+        AudioDeviceDestroyIOProcID(device.id, procID)
     }
 
     /// Watches the machine's device list.

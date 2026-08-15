@@ -73,7 +73,7 @@ public final class AggregateDevice {
 
         var description: [String: Any] = [
             kAudioAggregateDeviceNameKey: "Kurarin Engine",
-            kAudioAggregateDeviceUIDKey: "com.byeolki.kurarin.aggregate.\(UUID().uuidString)",
+            kAudioAggregateDeviceUIDKey: AudioDevices.aggregateUIDPrefix + UUID().uuidString,
             kAudioAggregateDeviceIsPrivateKey: 1,
             kAudioAggregateDeviceIsStackedKey: 0,
             kAudioAggregateDeviceMainSubDeviceKey: microphone.uid,
@@ -176,10 +176,15 @@ public final class SystemAudioTap {
         let description: CATapDescription
         switch source {
         case .entireSystem:
-            // Excluding ourselves is not optional. The monitoring output would
-            // otherwise be captured and fed straight back into the mix.
+            // Excluding ourselves is not optional: what the engine writes to the
+            // virtual device would otherwise be captured and mixed back into the
+            // virtual device, one block later, forever.
+            //
+            // The exclusion list holds audio object IDs, not process IDs, and
+            // the two are not interchangeable — passing a pid here silently
+            // excludes nothing, or the wrong process.
             description = CATapDescription(
-                stereoGlobalTapButExcludeProcesses: [AudioObjectID(getpid())]
+                stereoGlobalTapButExcludeProcesses: SystemAudioTap.ownProcessObjects()
             )
         case .processes(let objects):
             description = CATapDescription(
@@ -203,6 +208,36 @@ public final class SystemAudioTap {
 
         objectID = created
         uid = identifier.uuidString
+    }
+
+    /// This process, as Core Audio addresses it.
+    ///
+    /// The HAL only has an object for a process once that process has touched
+    /// audio, and a tap can be built before the engine's first callback has
+    /// run. When the lookup comes up empty the engine is asked to make itself
+    /// known and it is tried again, because a global tap that fails to exclude
+    /// Kurarin is a feedback loop rather than a missing feature.
+    static func ownProcessObjects() -> [AudioObjectID] {
+        if let object = processObject(for: getpid()) { return [object] }
+        AudioDevices.announceProcessToHAL()
+        return processObject(for: getpid()).map { [$0] } ?? []
+    }
+
+    private static func processObject(for pid: pid_t) -> AudioObjectID? {
+        var pid = pid
+        var address = AudioDevices.address(kAudioHardwarePropertyTranslatePIDToProcessObject)
+        var object = AudioObjectID(0)
+        var size = UInt32(MemoryLayout<AudioObjectID>.size)
+
+        let status = AudioObjectGetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject),
+            &address,
+            UInt32(MemoryLayout<pid_t>.size),
+            &pid,
+            &size,
+            &object
+        )
+        return status == noErr && object != 0 ? object : nil
     }
 
     /// One process Core Audio knows about, as the tap API addresses it.

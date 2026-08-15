@@ -63,8 +63,13 @@ public final class SoundboardMixer {
     // MARK: - Control side
 
     /// Copies the samples into a buffer the audio thread can own.
-    public func install(_ samples: [Float], at slot: Int) {
-        guard banks.indices.contains(slot), !samples.isEmpty else { return }
+    ///
+    /// False means the handover queue was full and the sample was not installed
+    /// — worth surfacing, because the slot would otherwise look loaded and play
+    /// nothing.
+    @discardableResult
+    public func install(_ samples: [Float], at slot: Int) -> Bool {
+        guard banks.indices.contains(slot), !samples.isEmpty else { return false }
 
         let buffer = UnsafeMutablePointer<Float>.allocate(capacity: samples.count)
         samples.withUnsafeBufferPointer { source in
@@ -72,10 +77,12 @@ public final class SoundboardMixer {
             buffer.update(from: base, count: samples.count)
         }
 
-        if !commands.push(.install(slot: slot, samples: buffer, count: samples.count)) {
+        let accepted = commands.push(.install(slot: slot, samples: buffer, count: samples.count))
+        if !accepted {
             buffer.deallocate()
         }
         collectRetiredBuffers()
+        return accepted
     }
 
     public func clear(slot: Int) {
