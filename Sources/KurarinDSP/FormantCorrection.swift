@@ -29,15 +29,13 @@ struct FormantCorrection {
     ///
     /// Both are no-ops at a ratio of 1, and both grow with the distance from
     /// it, in the direction that undoes the uniform map's error.
-    static func shelves(forRatio ratio: Float) -> (low: Biquad.Kind, lowGainDB: Float, highGainDB: Float) {
+    static func shelves(forRatio ratio: Float) -> (lowGainDB: Float, highGainDB: Float) {
         // How far from "no change", in octaves, signed.
         let octaves = log2(max(ratio, 0.01))
-        // Six decibels an octave is what lines the corrected first formant up
-        // with the measured male-to-female maps in the literature without the
-        // vowel starting to sound thin.
-        let lowGain = -4.5 * octaves
-        let highGain = 2.5 * octaves
-        return (.lowShelf, lowGain, highGain)
+        // Four and a half decibels an octave below, two and a half above: the
+        // amount that lines the corrected first formant up with the measured
+        // male-to-female maps without the vowel starting to sound thin.
+        return (lowGainDB: -4.5 * octaves, highGainDB: 2.5 * octaves)
     }
 
     static let lowShelfHz: Float = 700

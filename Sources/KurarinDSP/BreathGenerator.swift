@@ -55,7 +55,9 @@ public final class BreathGenerator: AudioProcessor {
         guard amount > 0.001 else {
             // The envelope still has to follow the signal, or the first breath
             // after switching it on arrives at whatever level it left off at.
-            for i in 0..<frameCount { follow(abs(buffer[i])) }
+            let release = releaseCoefficient
+            for i in 0..<frameCount { follow(abs(buffer[i]), release: release) }
+            envelope = withoutDenormals(envelope)
             return
         }
 
@@ -90,8 +92,9 @@ public final class BreathGenerator: AudioProcessor {
 
         scratch.withUnsafeMutableBufferPointer { noise in
             guard let base = noise.baseAddress else { return }
+            let release = releaseCoefficient
             for i in 0..<count {
-                follow(abs(signal[i]))
+                follow(abs(signal[i]), release: release)
                 voicedBlend = voicedTarget + (voicedBlend - voicedTarget) * blendCoefficient
 
                 random = random &* 6364136223846793005 &+ 1442695040888963407
@@ -101,10 +104,13 @@ public final class BreathGenerator: AudioProcessor {
         }
     }
 
-    private func follow(_ magnitude: Float) {
+    /// Hoisted out of the per-sample path: an exponential per sample, for a
+    /// constant, is a surprising amount of the cost of a unit this simple.
+    private lazy var releaseCoefficient = expf(-1 / (0.06 * sampleRate))
+
+    private func follow(_ magnitude: Float, release: Float) {
         // Fast up, slow down: breath tracks the syllable, not the waveform.
         let attack: Float = 0.3
-        let release = expf(-1 / (0.06 * sampleRate))
         envelope = magnitude > envelope
             ? envelope + (magnitude - envelope) * attack
             : envelope * release

@@ -48,6 +48,13 @@ public final class HighBandShaper: AudioProcessor {
 
     private let analysisFilters: [[Biquad]]
     private let synthesisFilters: [[Biquad]]
+    /// The generated noise starts as white, which is to say it has as much
+    /// energy at fifty hertz as at ten kilohertz. The telescoping split below
+    /// assumes its source already begins at the split, so without this the
+    /// lowest synthesis band reaches down to DC and lays broadband rumble under
+    /// the voice — measured at fifty decibels above the input below two hundred
+    /// hertz, rising and falling with every sibilant.
+    private let noiseHighPass: [Biquad]
     private var configuredRatio: Float = 1
 
     private var delayLine: [Float]
@@ -80,6 +87,7 @@ public final class HighBandShaper: AudioProcessor {
         synthesisFilters = HighBandShaper.edges.map { _ in
             (0..<2).map { _ in Biquad(sampleRate: sampleRate) }
         }
+        noiseHighPass = (0..<2).map { _ in Biquad(sampleRate: sampleRate) }
 
         analysisEnvelopes = [Float](repeating: 0, count: bandCount)
         synthesisEnvelopes = [Float](repeating: 0, count: bandCount)
@@ -98,8 +106,16 @@ public final class HighBandShaper: AudioProcessor {
     private func configureSynthesis() {
         configuredRatio = formantRatio
         let nyquist = sampleRate * 0.45
+
+        // The floor of the rebuilt band moves with the ratio too. Holding it at
+        // the split while the edges above it come down would collapse the lowest
+        // sub-bands into nothing and quietly drop the five-to-seven kilohertz
+        // air out of a deepened voice.
+        let base = min(max(HighBandShaper.splitHz * formantRatio, 2500), nyquist * 0.9)
+        noiseHighPass.forEach { $0.configure(kind: .highpass, frequency: base, q: 0.707) }
+
         for (index, edge) in HighBandShaper.edges.enumerated() {
-            let moved = min(max(edge * formantRatio, HighBandShaper.splitHz), nyquist)
+            let moved = min(max(edge * formantRatio, base * 1.2), nyquist)
             synthesisFilters[index].forEach {
                 $0.configure(kind: .lowpass, frequency: moved, q: 0.707)
             }
@@ -109,6 +125,7 @@ public final class HighBandShaper: AudioProcessor {
     public func reset() {
         analysisFilters.forEach { $0.forEach { $0.reset() } }
         synthesisFilters.forEach { $0.forEach { $0.reset() } }
+        noiseHighPass.forEach { $0.reset() }
         for i in delayLine.indices { delayLine[i] = 0 }
         delayIndex = 0
         for i in analysisEnvelopes.indices {
@@ -136,12 +153,15 @@ public final class HighBandShaper: AudioProcessor {
         }
 
         let blend = min(max(mix, 0), 1)
+        // The envelopes and the filters are kept current even when the rebuilt
+        // band is not being used, so that turning it up resumes from what the
+        // voice is doing now rather than from wherever it was left.
+        measureAnalysisEnvelopes(count: count)
         guard blend > 0.001 else {
             for i in 0..<count { buffer[i] = delayed[i] }
             return
         }
 
-        measureAnalysisEnvelopes(count: count)
         buildNoise(count: count)
         synthesise(count: count)
 
@@ -160,6 +180,10 @@ public final class HighBandShaper: AudioProcessor {
         for i in 0..<count {
             random = random &* 6364136223846793005 &+ 1442695040888963407
             noise[i] = Float(Int32(truncatingIfNeeded: random >> 32)) / Float(Int32.max)
+        }
+        noise.withUnsafeMutableBufferPointer { base in
+            guard let pointer = base.baseAddress else { return }
+            noiseHighPass.forEach { $0.process(pointer, frameCount: count) }
         }
     }
 

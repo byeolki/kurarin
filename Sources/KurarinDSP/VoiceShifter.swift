@@ -76,7 +76,7 @@ public final class VoiceShifter: AudioProcessor {
     /// between them on a marginal frame is audible as a stutter in the middle
     /// of a word. A change has to be agreed on twice before it is acted on.
     private var stableVoiced = false
-    private var voicedDisagreements = 0
+    private var disagreeingFrames = 0
     private let tracker: PitchTracker
     /// Whether this instance is responsible for feeding the tracker. When the
     /// chain owns it, the chain has already pushed this block before the
@@ -141,7 +141,7 @@ public final class VoiceShifter: AudioProcessor {
         samplesSinceAnalysis = 0
         reuseCount = 0
         stableVoiced = false
-        voicedDisagreements = 0
+        disagreeingFrames = 0
         if ownsTracker { tracker.reset() }
     }
 
@@ -178,7 +178,7 @@ public final class VoiceShifter: AudioProcessor {
         }
         inputWritten += frameCount
 
-        updateVoicedState()
+        updateVoicedState(frameCount: frameCount)
 
         guard ownsTracker else { return }
         tracker.push(buffer, frameCount: frameCount)
@@ -189,15 +189,19 @@ public final class VoiceShifter: AudioProcessor {
         }
     }
 
-    private func updateVoicedState() {
+    /// - Parameter frameCount: how much audio this verdict covers. Counting
+    ///   callbacks instead would make the debounce mean nothing at a sixty-four
+    ///   frame buffer and eighty milliseconds at a two-thousand frame one — the
+    ///   host chooses that number, not us.
+    private func updateVoicedState(frameCount: Int) {
         let raw = tracker.isVoiced && tracker.periodSamples > 0
         if raw == stableVoiced {
-            voicedDisagreements = 0
+            disagreeingFrames = 0
         } else {
-            voicedDisagreements += 1
-            if voicedDisagreements >= 2 {
+            disagreeingFrames += frameCount
+            if disagreeingFrames >= Int(0.012 * sampleRate) {
                 stableVoiced = raw
-                voicedDisagreements = 0
+                disagreeingFrames = 0
             }
         }
     }

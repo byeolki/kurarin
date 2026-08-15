@@ -62,10 +62,7 @@ public final class VoiceChain {
             filter.configure(kind: .lowpass, frequency: HighBandShaper.splitHz, q: 0.707)
             return filter
         }
-        highShaper = HighBandShaper(
-            sampleRate: sampleRate,
-            delayFrames: VoiceShifter(sampleRate: sampleRate, latencyMode: latencyMode).latencyFrames
-        )
+        highShaper = HighBandShaper(sampleRate: sampleRate, delayFrames: shifter.latencyFrames)
         lowScratch = [Float](repeating: 0, count: VoiceChain.maximumBlock)
         highScratch = [Float](repeating: 0, count: VoiceChain.maximumBlock)
 
@@ -122,7 +119,11 @@ public final class VoiceChain {
         shifter.formantRatio = clamped.formantRatio
         breath.amount = clamped.breathiness
         highShaper.formantRatio = clamped.formantRatio
-        highShaper.mix = clamped.highBandResynthesis
+        // Only while the shifter is actually shifting. With the effect off, or
+        // a preset at unity, the shifter passes the voice through untouched and
+        // there is nothing to repair — replacing the top of a real voice with
+        // synthetic noise for no reason is a strange thing for a bypass to do.
+        highShaper.mix = isShifting(clamped) ? clamped.highBandResynthesis : 0
         formantCorrector.ratio = clamped.formantRatio
         formantCorrector.amount = clamped.formantCorrection
         // With a target set, the ratio is worked out per block from what the
@@ -162,9 +163,17 @@ public final class VoiceChain {
 
         // Octave errors are ignored rather than averaged in: a tracker that
         // slips an octave for one frame would otherwise drag the whole
-        // estimate with it.
-        guard speakerPitchHz == 0 || (heard > speakerPitchHz * 0.6 && heard < speakerPitchHz * 1.7) else {
-            return
+        // estimate with it. But the gate cannot be absolute, because the first
+        // frame seeds it — one octave-halved estimate at the wrong moment would
+        // otherwise lock the target an octave out for the rest of the session,
+        // with nothing the user could do about it. Persistent disagreement wins.
+        if speakerPitchHz > 0, heard < speakerPitchHz * 0.6 || heard > speakerPitchHz * 1.7 {
+            disagreeingFrames += 1
+            if disagreeingFrames < 60 { return }
+            speakerPitchHz = 0
+            disagreeingFrames = 0
+        } else {
+            disagreeingFrames = 0
         }
 
         if speakerPitchHz == 0 {
@@ -190,11 +199,17 @@ public final class VoiceChain {
     /// The speaker's resting pitch, learned while they talk.
     private var speakerPitchHz: Float = 0
     private var voicedSeconds: Float = 0
+    private var disagreeingFrames = 0
 
     /// What the shifter is currently being asked to do, for the interface to
     /// show — with a target set it is not the number in the preset.
     public var effectivePitchRatio: Float { shifter.pitchRatio }
     public var detectedPitchHz: Float { speakerPitchHz }
+
+    private func isShifting(_ parameters: VoiceParameters) -> Bool {
+        if parameters.targetPitchHz > 0 { return true }
+        return abs(parameters.pitchRatio - 1) > 0.001 || abs(parameters.formantRatio - 1) > 0.001
+    }
 
     public func reset() {
         tracker.reset()
@@ -207,6 +222,7 @@ public final class VoiceChain {
         formantCorrector.reset()
         speakerPitchHz = 0
         voicedSeconds = 0
+        disagreeingFrames = 0
         gate.reset()
         highPass.reset()
         shifter.reset()
@@ -250,20 +266,30 @@ public final class VoiceChain {
         // periodic and the shifter's repetition is exactly right; above it the
         // signal is breath and hiss, and repeating that is what makes a shifted
         // voice buzz.
-        let frames = min(frameCount, VoiceChain.maximumBlock)
         lowScratch.withUnsafeMutableBufferPointer { low in
             highScratch.withUnsafeMutableBufferPointer { high in
                 guard let lowBase = low.baseAddress, let highBase = high.baseAddress else { return }
 
-                for i in 0..<frames { lowBase[i] = buffer[i] }
-                splitFilters.forEach { $0.process(lowBase, frameCount: frames) }
-                // Telescoping, so the two halves add back to the input exactly.
-                for i in 0..<frames { highBase[i] = buffer[i] - lowBase[i] }
+                // Chunked rather than truncated. A block longer than the
+                // scratch buffers has to come out the far end whole: dropping
+                // its tail would leave that audio unprocessed and put the
+                // shifter's timeline permanently out of step with the input.
+                var offset = 0
+                while offset < frameCount {
+                    let frames = min(frameCount - offset, VoiceChain.maximumBlock)
+                    let block = buffer + offset
 
-                shifter.process(lowBase, frameCount: frames)
-                highShaper.process(highBase, frameCount: frames)
+                    for i in 0..<frames { lowBase[i] = block[i] }
+                    splitFilters.forEach { $0.process(lowBase, frameCount: frames) }
+                    // Telescoping, so the two halves add back to the input exactly.
+                    for i in 0..<frames { highBase[i] = block[i] - lowBase[i] }
 
-                for i in 0..<frames { buffer[i] = lowBase[i] + highBase[i] }
+                    shifter.process(lowBase, frameCount: frames)
+                    highShaper.process(highBase, frameCount: frames)
+
+                    for i in 0..<frames { block[i] = lowBase[i] + highBase[i] }
+                    offset += frames
+                }
             }
         }
         // Straight after the shifter, where the uniform scaling it applied is

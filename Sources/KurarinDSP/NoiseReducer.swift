@@ -199,12 +199,25 @@ public final class NoiseReducer: AudioProcessor {
                 // its noise loses a sixth of a decibel this way and a third of
                 // its amplitude the other way — the difference between cleaning
                 // a signal and thinning it.
+                // Nothing is reduced until something has been learned. During
+                // the warm-up the floor is simply the envelope, which would
+                // otherwise read as "all of this is noise" and mute the first
+                // fifth of a second of every session.
+                let learning = warmUp < warmUpSamples
                 let ratio = envelope > 0 ? floor / envelope : 1
                 let remaining = 1 - over * ratio * ratio
-                let target = remaining > 0 ? max(sqrtf(remaining), minimumGain) : minimumGain
+                let target = learning
+                    ? 1
+                    : (remaining > 0 ? max(sqrtf(remaining), minimumGain) : minimumGain)
                 // Smoothed in time so the band fades rather than steps, which
                 // is the other half of not sounding processed.
-                gain += (target - gain) * (target < gain ? (1 - attack) : (1 - release))
+                // Opening quickly and closing slowly, not the other way round.
+                // The fast constant belongs to the direction that restores the
+                // signal: a word starts in a couple of milliseconds, and a
+                // reducer that takes eighty to get out of its way swallows the
+                // start of every sentence. Closing can afford to be gradual —
+                // nothing is waiting for the noise to come back.
+                gain += (target - gain) * (target > gain ? (1 - attack) : (1 - release))
 
                 base[i] *= gain
             }
@@ -226,9 +239,6 @@ public final class NoiseReducer: AudioProcessor {
                 currentLow.withUnsafeMutableBufferPointer { low in
                     guard let base = low.baseAddress else { return }
                     sections.forEach { $0.process(base, frameCount: count) }
-                }
-                if index == 0 {
-                    for i in 0..<count { envelopes[0] = max(envelopes[0], abs(currentLow[i])) }
                 }
             }
             offset += count
