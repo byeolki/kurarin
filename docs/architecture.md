@@ -219,7 +219,10 @@ keys, so presets written by an older build keep loading.
 
 Built-ins (Neutral, Child, Deep Male, Female, Robot, Radio, Monster, Underwater)
 are compiled in with fixed UUIDs so a user's choice survives an upgrade, and are
-read-only: editing one saves a copy. User presets are one JSON file each in
+read-only: editing one saves a copy. They are compiled in rather than shipped as
+bundle resources, as the design sketch had them: a starting point that cannot
+fail to load is worth more than one that can be edited in place, and the app
+bundle is assembled by hand here rather than by Xcode. User presets are one JSON file each in
 `~/Library/Application Support/Kurarin/presets`, so a corrupt write costs one
 preset rather than the library.
 
@@ -228,6 +231,12 @@ preset rather than the library.
 SwiftUI: `MenuBarExtra` for the things you need mid-game, one `Window` for
 setup. Global shortcuts use Carbon's `RegisterEventHotKey`, which needs no
 accessibility permission and works while a game holds the keyboard.
+
+The level meters live in the window and not in the menu, which the design
+sketch asked for. A `MenuBarExtra` in menu style hosts menu items, not
+arbitrary views, and a meter that renders once when the menu opens and then
+sits still is worse than no meter. Moving the whole menu to window style to
+gain one would cost the quick toggles their menu behaviour.
 
 Two pieces of state hygiene worth knowing about:
 

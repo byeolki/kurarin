@@ -43,6 +43,9 @@ accepted by `coreaudiod`.
       apparent size of the speaker
 - [ ] Formant alone changes the apparent size without changing the note
 - [ ] Dragging pitch and formant while speaking produces no clicks
+- [ ] Moving an equaliser band changes the tone, and the frequency slider spends
+      a sensible amount of its travel below 1 kHz
+- [ ] Flatten zeroes every band
 - [ ] Fricatives ("s", "sh", "f") stay crisp rather than buzzing
 - [ ] Switching the latency mode restarts the engine and audio returns
 - [ ] Editing a built-in preset and saving creates a copy; the built-in is intact

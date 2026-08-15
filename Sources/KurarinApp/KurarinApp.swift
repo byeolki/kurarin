@@ -324,6 +324,10 @@ struct VoiceTab: View {
                     }
                 }
 
+                Section("Equaliser") {
+                    EqualiserEditor(bands: $model.editedParameters.eqBands)
+                }
+
                 Section("Character") {
                     Slider(value: $model.editedParameters.driveAmount, in: 1...20) { Text("Drive") }
                     Slider(value: $model.editedParameters.driveBitDepth, in: 0...16) { Text("Bit crush") }
@@ -351,6 +355,73 @@ struct VoiceTab: View {
         }
         .onChange(of: model.editedParameters) { _, _ in model.applyCurrentPreset() }
         .onAppear { presetName = model.selectedPreset?.name ?? "" }
+    }
+}
+
+/// The five bands, in the order the chain applies them.
+///
+/// Every preset already carries a curve; without this the curve could only be
+/// changed by editing the JSON by hand. Frequency and gain are on sliders, and
+/// Q is left to the preset — three controls per band is more knobs than the
+/// difference is worth for most people, and the outer bands are shelves where Q
+/// barely matters.
+struct EqualiserEditor: View {
+    @Binding var bands: [ParametricEQ.Band]
+
+    private static let roles = ["Low shelf", "Low mid", "Mid", "High mid", "High shelf"]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            ForEach(bands.indices, id: \.self) { index in
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack {
+                        Text(EqualiserEditor.roles[safe: index] ?? "Band \(index + 1)")
+                            .font(.caption)
+                        Spacer()
+                        Text(String(format: "%.0f Hz  %+.1f dB", bands[index].frequency, bands[index].gainDB))
+                            .font(.caption)
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Slider(value: gain(at: index), in: -18...18)
+                    Slider(value: frequency(at: index), in: 0...1)
+                        .controlSize(.mini)
+                }
+            }
+
+            Button("Flatten") {
+                for index in bands.indices { bands[index].gainDB = 0 }
+            }
+            .controlSize(.small)
+        }
+    }
+
+    private func gain(at index: Int) -> Binding<Float> {
+        Binding(
+            get: { bands[safe: index]?.gainDB ?? 0 },
+            set: { if bands.indices.contains(index) { bands[index].gainDB = $0 } }
+        )
+    }
+
+    private static let lowest: Float = 20
+    private static let highest: Float = 18000
+
+    /// Position on the slider, not hertz. Pitch is logarithmic, so a linear
+    /// frequency slider spends four fifths of its travel above 4 kHz and makes
+    /// the bands that shape a voice impossible to place.
+    private func frequency(at index: Int) -> Binding<Float> {
+        let span = log(EqualiserEditor.highest / EqualiserEditor.lowest)
+        return Binding(
+            get: {
+                let hertz = bands[safe: index]?.frequency ?? 1000
+                return log(hertz / EqualiserEditor.lowest) / span
+            },
+            set: { position in
+                guard bands.indices.contains(index) else { return }
+                bands[index].frequency = EqualiserEditor.lowest * exp(position * span)
+            }
+        )
     }
 }
 
