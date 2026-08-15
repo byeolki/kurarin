@@ -23,6 +23,7 @@ public final class VoiceChain {
     private let tracker: PitchTracker
     private var samplesSinceAnalysis = 0
     private let analysisHop: Int
+    private let breath: BreathGenerator
     private let eq: ParametricEQ
     private let drive: Drive
     private let reverb: Reverb
@@ -44,6 +45,7 @@ public final class VoiceChain {
         suppressor = TransientSuppressor(sampleRate: sampleRate)
         highPass = Biquad(sampleRate: sampleRate)
         shifter = VoiceShifter(sampleRate: sampleRate, latencyMode: latencyMode, tracker: tracker)
+        breath = BreathGenerator(sampleRate: sampleRate)
         eq = ParametricEQ(sampleRate: sampleRate)
         drive = Drive(sampleRate: sampleRate)
         reverb = Reverb(sampleRate: sampleRate)
@@ -87,8 +89,13 @@ public final class VoiceChain {
             appliedHighPassHz = clamped.highPassHz
         }
 
-        shifter.pitchRatio = clamped.pitchRatio
         shifter.formantRatio = clamped.formantRatio
+        breath.amount = clamped.breathiness
+        // With a target set, the ratio is worked out per block from what the
+        // speaker is actually doing; without one it is the parameter itself.
+        if clamped.targetPitchHz <= 0 {
+            shifter.pitchRatio = clamped.pitchRatio
+        }
 
         eq.setBands(clamped.eqBands)
 
@@ -102,10 +109,66 @@ public final class VoiceChain {
         reverb.mix = clamped.reverbMix
     }
 
+    /// Follows the speaker's own pitch, slowly, and aims the shifter so the
+    /// result lands on the target.
+    ///
+    /// Deliberately slow. Following the pitch closely would flatten every
+    /// sentence into a monotone, because holding the output at one frequency
+    /// means undoing exactly the intonation that makes speech sound alive.
+    /// What is wanted is the speaker's resting pitch — a property of the person
+    /// that takes seconds to establish and then barely moves — with all of
+    /// their expression left riding on top of it.
+    private func updatePitchRatioForTarget(voiced: Bool, frameCount: Int) {
+        let target = parameters.targetPitchHz
+        guard target > 0 else { return }
+        guard voiced, tracker.periodSamples > 0 else { return }
+
+        let heard = sampleRate / tracker.periodSamples
+        guard heard > 50, heard < 500 else { return }
+
+        // Octave errors are ignored rather than averaged in: a tracker that
+        // slips an octave for one frame would otherwise drag the whole
+        // estimate with it.
+        guard speakerPitchHz == 0 || (heard > speakerPitchHz * 0.6 && heard < speakerPitchHz * 1.7) else {
+            return
+        }
+
+        if speakerPitchHz == 0 {
+            speakerPitchHz = heard
+            voicedSeconds = 0
+            return
+        }
+
+        let elapsed = Float(frameCount) / sampleRate
+        voicedSeconds += elapsed
+
+        // Quick while it is still learning who is speaking, then very slow.
+        // The slow constant is the important one: a sentence rises and falls
+        // over a second or two, and an estimate that followed that would cancel
+        // the intonation out — the output would sit on one note and sound like
+        // a machine reading. Over half a minute, only the speaker changes.
+        let timeConstant: Float = voicedSeconds < 2 ? 0.4 : 30
+        speakerPitchHz += (heard - speakerPitchHz) * min(elapsed / timeConstant, 1)
+
+        shifter.pitchRatio = min(max(target / speakerPitchHz, 0.5), 2)
+    }
+
+    /// The speaker's resting pitch, learned while they talk.
+    private var speakerPitchHz: Float = 0
+    private var voicedSeconds: Float = 0
+
+    /// What the shifter is currently being asked to do, for the interface to
+    /// show — with a target set it is not the number in the preset.
+    public var effectivePitchRatio: Float { shifter.pitchRatio }
+    public var detectedPitchHz: Float { speakerPitchHz }
+
     public func reset() {
         tracker.reset()
         samplesSinceAnalysis = 0
         suppressor.reset()
+        breath.reset()
+        speakerPitchHz = 0
+        voicedSeconds = 0
         gate.reset()
         highPass.reset()
         shifter.reset()
@@ -131,6 +194,8 @@ public final class VoiceChain {
         let voiced = tracker.isVoiced
         suppressor.isVoiced = voiced
         gate.isVoiced = voiced
+        breath.isVoiced = voiced
+        updatePitchRatioForTarget(voiced: voiced, frameCount: frameCount)
 
         // Clicks first: a key press is loud enough to hold a gate open, and
         // removing it before the gate decides anything keeps the two from
@@ -139,6 +204,7 @@ public final class VoiceChain {
         gate.process(buffer, frameCount: frameCount)
         highPass.process(buffer, frameCount: frameCount)
         shifter.process(buffer, frameCount: frameCount)
+        breath.process(buffer, frameCount: frameCount)
         eq.process(buffer, frameCount: frameCount)
         drive.process(buffer, frameCount: frameCount)
         reverb.process(buffer, frameCount: frameCount)

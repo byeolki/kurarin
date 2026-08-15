@@ -19,6 +19,23 @@ public struct VoiceParameters: Codable, Equatable, Sendable {
     public var pitchRatio: Float
     public var formantRatio: Float
 
+    /// Where the voice should end up, in hertz, rather than how far to move it.
+    ///
+    /// A ratio is the wrong unit for "sound like a woman". Multiplying a deep
+    /// voice by 1.3 lands it between the two, and multiplying an already high
+    /// one by the same amount overshoots — the same preset cannot work for two
+    /// speakers. Aiming at a frequency instead lets the shifter work out the
+    /// ratio from what it hears, which it can, because it is already tracking
+    /// pitch to place its grains.
+    ///
+    /// Zero falls back to `pitchRatio`, which is what effects rather than
+    /// impersonations want: a monster is a ratio, not a note.
+    public var targetPitchHz: Float
+
+    /// Aspiration noise, the cue that separates a voice from a pitch-shifted
+    /// recording of one.
+    public var breathiness: Float
+
     public var eqBands: [ParametricEQ.Band]
 
     public var driveAmount: Float
@@ -40,6 +57,8 @@ public struct VoiceParameters: Codable, Equatable, Sendable {
         highPassHz: Float = 80,
         pitchRatio: Float = 1,
         formantRatio: Float = 1,
+        targetPitchHz: Float = 0,
+        breathiness: Float = 0,
         eqBands: [ParametricEQ.Band] = ParametricEQ.defaultBands,
         driveAmount: Float = 1,
         driveBitDepth: Float = 0,
@@ -57,6 +76,8 @@ public struct VoiceParameters: Codable, Equatable, Sendable {
         self.highPassHz = highPassHz
         self.pitchRatio = pitchRatio
         self.formantRatio = formantRatio
+        self.targetPitchHz = targetPitchHz
+        self.breathiness = breathiness
         self.eqBands = eqBands
         self.driveAmount = driveAmount
         self.driveBitDepth = driveBitDepth
@@ -85,6 +106,8 @@ public struct VoiceParameters: Codable, Equatable, Sendable {
         highPassHz        = value(.highPassHz, defaults.highPassHz)
         pitchRatio        = value(.pitchRatio, defaults.pitchRatio)
         formantRatio      = value(.formantRatio, defaults.formantRatio)
+        targetPitchHz     = value(.targetPitchHz, defaults.targetPitchHz)
+        breathiness       = value(.breathiness, defaults.breathiness)
         eqBands           = value(.eqBands, defaults.eqBands)
         driveAmount       = value(.driveAmount, defaults.driveAmount)
         driveBitDepth     = value(.driveBitDepth, defaults.driveBitDepth)
@@ -109,6 +132,10 @@ public struct VoiceParameters: Codable, Equatable, Sendable {
         result.highPassHz = min(max(highPassHz, 20), 500)
         result.pitchRatio = min(max(pitchRatio, 0.5), 2)
         result.formantRatio = min(max(formantRatio, 0.5), 2)
+        // Zero means "use the ratio"; anything else has to be a pitch a person
+        // could actually speak at.
+        result.targetPitchHz = targetPitchHz <= 0 ? 0 : min(max(targetPitchHz, 60), 400)
+        result.breathiness = min(max(breathiness, 0), 1)
         result.driveAmount = min(max(driveAmount, 1), 20)
         result.driveBitDepth = min(max(driveBitDepth, 0), 16)
         result.driveDownsampleHz = max(driveDownsampleHz, 0)

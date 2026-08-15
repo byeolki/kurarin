@@ -400,16 +400,46 @@ struct VoiceTab: View {
                 Section("Voice") {
                     Toggle("Effect enabled", isOn: $model.isEffectEnabled)
 
-                    LabeledRatio(
-                        title: "Pitch",
-                        value: $model.editedParameters.pitchRatio,
-                        caption: "How high the voice sits."
-                    )
+                    VStack(alignment: .leading, spacing: 2) {
+                        Toggle("Aim for a pitch", isOn: Binding(
+                            get: { model.editedParameters.targetPitchHz > 0 },
+                            set: { model.editedParameters.targetPitchHz = $0 ? 200 : 0 }
+                        ))
+                        if model.editedParameters.targetPitchHz > 0 {
+                            HStack {
+                                Slider(value: $model.editedParameters.targetPitchHz, in: 70...320)
+                                Text(String(format: "%.0f Hz", model.editedParameters.targetPitchHz))
+                                    .monospacedDigit()
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: 56, alignment: .trailing)
+                            }
+                            Text("Lands your voice on this pitch whoever you are, by measuring where it normally sits — a multiplier that suits a deep voice overshoots a light one. Men speak around 110 Hz, women around 200, children around 255.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+
+                    if model.editedParameters.targetPitchHz <= 0 {
+                        LabeledRatio(
+                            title: "Pitch",
+                            value: $model.editedParameters.pitchRatio,
+                            caption: "How high the voice sits."
+                        )
+                    }
                     LabeledRatio(
                         title: "Formant",
                         value: $model.editedParameters.formantRatio,
                         caption: "How large the speaker sounds. Move this with pitch to avoid a chipmunk."
                     )
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Slider(value: $model.editedParameters.breathiness, in: 0...1) {
+                            Text("Breath")
+                        }
+                        Text("Aspiration noise. A pitch shifter moves the harmonics and leaves this behind, which is most of why a shifted voice sounds shifted rather than like somebody else. Female voices carry more of it.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
 
                 Section("Cleanup") {

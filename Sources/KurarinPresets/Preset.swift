@@ -50,7 +50,11 @@ public extension Preset {
                 // Formants move less than the fundamental. A child's vocal tract
                 // is shorter, but not in the same proportion as the pitch is
                 // higher; matching the two exactly is what makes a chipmunk.
-                formantRatio: 1.32,
+                formantRatio: 1.34,
+                // Around where a school-age child actually speaks, whoever is
+                // holding the microphone.
+                targetPitchHz: 255,
+                breathiness: 0.12,
                 eqBands: [
                     .init(frequency: 150,  q: 0.707, gainDB: -4),
                     .init(frequency: 400,  q: 1.0,   gainDB: -2),
@@ -66,7 +70,9 @@ public extension Preset {
             name: "Deep Male",
             parameters: VoiceParameters(
                 pitchRatio: 0.72,
-                formantRatio: 0.84,
+                formantRatio: 0.86,
+                targetPitchHz: 95,
+                breathiness: 0.05,
                 eqBands: [
                     .init(frequency: 110,  q: 0.707, gainDB: 4),
                     .init(frequency: 300,  q: 1.0,   gainDB: 2),
@@ -81,14 +87,25 @@ public extension Preset {
             id: builtInID("04"),
             name: "Female",
             parameters: VoiceParameters(
-                pitchRatio: 1.28,
-                formantRatio: 1.14,
+                pitchRatio: 1.55,
+                // A female vocal tract is roughly a sixth shorter, and the
+                // difference is not spread evenly: it shows up most in the
+                // higher formants, which the shelf below leans on.
+                formantRatio: 1.18,
+                // The number that matters. A ratio lands a deep voice halfway
+                // and overshoots a light one; a target lands both where women
+                // actually speak, and the shifter works out the rest.
+                targetPitchHz: 200,
+                // Female phonation is breathier — the glottis stays a little
+                // open — and without this the result is a pitched-up man
+                // rather than a woman.
+                breathiness: 0.3,
                 eqBands: [
-                    .init(frequency: 130,  q: 0.707, gainDB: -3),
-                    .init(frequency: 500,  q: 1.0,   gainDB: -1),
-                    .init(frequency: 2200, q: 1.0,   gainDB: 2),
-                    .init(frequency: 4500, q: 1.0,   gainDB: 2),
-                    .init(frequency: 9000, q: 0.707, gainDB: 1),
+                    .init(frequency: 160,  q: 0.707, gainDB: -5),
+                    .init(frequency: 500,  q: 1.0,   gainDB: -2),
+                    .init(frequency: 2400, q: 1.0,   gainDB: 2),
+                    .init(frequency: 4200, q: 1.0,   gainDB: 3),
+                    .init(frequency: 9000, q: 0.707, gainDB: 2),
                 ]
             ),
             isBuiltIn: true
