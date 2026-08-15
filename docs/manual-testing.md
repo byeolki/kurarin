@@ -51,6 +51,46 @@ accepted by `coreaudiod`.
 - [ ] Editing a built-in preset and saving creates a copy; the built-in is intact
 - [ ] Saved presets survive a relaunch
 
+## 2b. What only ears can judge
+
+Everything in this section has automated coverage for the property it is
+supposed to have — the pitch lands on the target, the breath is aperiodic, the
+noise floor comes down — and none for whether it sounds like a person. Run
+these together, in one sitting, with headphones and monitoring on.
+
+**Cleaning**
+
+- [ ] Type while speaking: the keys go, the words do not
+- [ ] Click the mouse mid-sentence: the click goes
+- [ ] Knock the desk: the thump goes, and nothing ducks for long afterwards
+- [ ] Say "ㅌ, ㅋ, ㅍ" repeatedly at "Click and key noise" 1.0. If the consonants
+      soften, that is the trade this control makes — back it off to 0.4
+- [ ] Turn on a fan and start the engine while quiet: the hiss falls away after
+      about a second
+- [ ] Then speak: the voice arrives at full level, not fading in
+- [ ] Hold "아————" for ten seconds with "Background noise" at 1.0. It must not
+      fade out partway through. This is the failure every other suppressor has
+- [ ] Start the engine *while already speaking*: nothing should be reduced until
+      the first pause
+
+**Voice**
+
+- [ ] Female: does it sound like a woman, or like you moved up? If the second,
+      say which — the pitch, the size, or the texture
+- [ ] Child, Deep Male, Monster, same question
+- [ ] "Rebuild the air" at 0 and at 1, on the Female preset, saying "s" and
+      "sh" a few times. At 0 the hiss should buzz on the new note; at 1 it
+      should sound like hiss
+- [ ] "Vocal tract correction" at 0 and at 1: which vowel sounds more like a
+      real speaker
+- [ ] "Breath" from 0 to 1 while speaking: it should sound like breath, not
+      like hiss added on top
+- [ ] "Aim for a pitch" on, at 200 Hz: speak for ten seconds and check the pitch
+      settles where it should, and that a question still rises at the end
+- [ ] Whisper. Then speak very quietly. Then shout
+- [ ] All of the above with monitoring on, listening for anything that stutters
+      at the start or end of a word
+
 ## 3. Soundboard
 
 - [ ] Dropping a file onto a tile assigns it; **Choose…** does the same

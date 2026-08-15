@@ -128,13 +128,48 @@ automated tests are genuinely meaningful.
 Chain order:
 
 ```
-input gain → noise gate → high pass → VoiceShifter → parametric EQ → drive → reverb → output gain
+input gain
+  → pitch tracking (on the untouched signal)
+  → transient suppressor → noise reducer → noise gate → high pass
+  → split at 5 kHz ─┬─ low: VoiceShifter (PSOLA)
+                    └─ high: HighBandShaper (rebuilt as noise)
+  → formant correction → breath → parametric EQ → drive → reverb → output gain
 ```
 
-The gate runs before the shifter so the shifter never hunts for pitch in room
-tone; the high pass runs before it because low-frequency rumble is what makes a
-pitch tracker report an octave too low. EQ, drive and reverb run after, so they
-shape the voice the listener actually hears.
+Pitch is tracked first, on the signal before anything has been done to it: a
+gate that has already closed or a click that has already been ducked would make
+the tracker answer a question about audio nobody is going to hear. One verdict
+then serves four units, which is the difference between this chain and a stack
+of independent effects.
+
+Cleaning happens before the gate — with the room tone already gone the gate has
+a much clearer difference between speech and silence — and the high pass runs
+before the shifter, because low-frequency rumble is what makes a pitch tracker
+report an octave too low. Everything after the split shapes the voice the
+listener actually hears.
+
+### The split
+
+Speech divides at roughly five kilohertz. Below it the signal is harmonic and
+PSOLA is the right tool. Above it the signal is air — breath, and the hiss of
+"s" and "sh" — and PSOLA is the wrong one: raising pitch means laying the same
+glottal period down more often, and the noise inside that period is repeated
+with it, locked to the new fundamental. Measured on a breathy vowel raised by
+half, the noise above three kilohertz went from a periodicity of 0.013 at the
+input to 0.265 at the output. That buzz is most of what makes a shifted voice
+sound shifted rather than like somebody else.
+
+Two things fixed it. Repeated grains are read from earlier glottal periods —
+whole periods back, so the harmonics stay aligned while the noise gets a fresh
+sample of itself — which took it to 0.098. And the band above the split is not
+moved at all: it is measured as four sub-band envelopes and rebuilt from fresh
+noise, which takes it to 0.013, the input's own figure. The synthesis bands sit
+where the analysis bands land after the formant ratio has moved them, which is
+how a change of size finally reaches the fricatives; a child's "s" is higher
+than an adult's, and pitch alone never did that.
+
+This is the harmonic-plus-noise model from the speech literature, minus the
+spectrum it usually needs to do it.
 
 Everything is mono, Float32, at the engine's sample rate. There is no resampling
 inside the chain — the aggregate device deals with rate differences.
@@ -172,21 +207,63 @@ the input, and both have to be in hand before a sample can leave, so the
 shifter's delay is `period × (1 + maximum formant ratio)` with the formant
 ceiling at 2.
 
-| Mode | Lowest F0 | Period | Shifter | With limiter |
+| Mode | Lowest F0 | Period | Shifter | With suppressor and limiter |
 |---|---|---|---|---|
-| Low | 100 Hz | 480 | 1440 frames (30 ms) | 32 ms |
-| Balanced | 75 Hz | 640 | 1920 frames (40 ms) | 42 ms |
-| Quality | 60 Hz | 800 | 2400 frames (50 ms) | 52 ms |
+| Low | 100 Hz | 480 | 1440 frames (30 ms) | 36 ms |
+| Balanced | 75 Hz | 640 | 1920 frames (40 ms) | 46 ms |
+| Quality | 60 Hz | 800 | 2400 frames (50 ms) | 56 ms |
+
+The click suppressor's look-ahead adds four milliseconds and the limiter's two.
+The rebuilt high band adds none: it waits exactly as long as the shifter does,
+so the two halves arrive together.
 
 Low mode will not track a deep voice reliably; that is the trade being made.
 Window sizes are constructor parameters, and switching modes rebuilds the
 shifter, so the engine restarts rather than resizing anything mid-stream.
 
+### Identity, not just pitch
+
+Two further things separate "a voice moved up" from "a different person".
+
+**Where the pitch lands.** A ratio is the wrong unit for "sound like a woman":
+1.28 times a deep voice arrives at 155 Hz, which is neither, and the same
+preset overshoots someone lighter. Presets can name a frequency instead, and
+the shifter works out the ratio from the pitch it is already tracking. What it
+tracks is the speaker's resting pitch, not the sentence's: it settles in a
+couple of seconds and then moves over half a minute, because a sentence rises
+and falls in one or two and following that would cancel out the intonation and
+leave the output reading on a single note.
+
+**Breath.** A glottis does not close completely, and the air that keeps
+escaping is heard as noise above two kilohertz — one of the cues for who is
+speaking, and stronger in female voices. It is generated fresh, shaped by the
+envelope of the voice and only while the signal is voiced, because a fricative
+is already noise.
+
+**Formant correction.** A shorter vocal tract raises its upper resonances more
+than its lower ones, and grain resampling multiplies every frequency by the
+same number. The literature warps the frequency axis piecewise; that needs a
+spectrum and an FFT window this chain cannot afford, so the difference between
+the two maps is applied as a pair of shelves derived from the ratio.
+
 ### The other units
 
 - **NoiseGate** — threshold with hysteresis and a hold time. One threshold makes
   the gate chatter on breath sitting right at the boundary, which is more
-  distracting than the noise it removes.
+  distracting than the noise it removes. It also stays open while the tracker
+  hears a voice, so a held note is not cut off by a threshold that was right
+  for its beginning.
+- **TransientSuppressor** — mouse clicks, key presses, knocks. Compares a
+  one-millisecond envelope against a fifteen-millisecond one, because a knock
+  is only a little louder than a shout but gets there in a fraction of the
+  time, and ducks through a four-millisecond look-ahead. Anything still loud
+  after ten milliseconds is not a click.
+- **NoiseReducer** — fans, hum, hiss. Eight bands, each learning how quiet it
+  gets, subtracting in power rather than in amplitude. It only learns while the
+  tracker hears no voice: steadiness cannot separate noise from speech, because
+  a held vowel is steady too, and an estimator that learns from anything steady
+  eventually decides the vowel is the room — which is why "aaah" fades out
+  halfway through on every other noise suppressor.
 - **Biquad** — transposed direct form II, Audio EQ Cookbook coefficients.
 - **ParametricEQ** — five bands: low shelf, three peaks, high shelf.
 - **Drive** — saturation, bit crush and sample rate crush as three separate

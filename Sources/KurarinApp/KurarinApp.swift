@@ -470,6 +470,26 @@ struct VoiceTab: View {
                     }
                 }
 
+                Section("Realism") {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Slider(value: $model.editedParameters.highBandResynthesis, in: 0...1) {
+                            Text("Rebuild the air")
+                        }
+                        Text("Above five kilohertz a voice is breath and hiss rather than harmonics, and a pitch shifter repeats it into a buzz on the new note. Rebuilding it as fresh noise is what stops a shifted voice sounding shifted.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Slider(value: $model.editedParameters.formantCorrection, in: 0...1) {
+                            Text("Vocal tract correction")
+                        }
+                        Text("A shorter vocal tract raises its upper resonances more than its lower ones. The shifter moves them all by the same amount, and this tilts the result back towards the uneven way anatomy actually changes size.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
                 Section("Equaliser") {
                     EqualiserEditor(bands: $model.editedParameters.eqBands)
                 }

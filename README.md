@@ -27,13 +27,27 @@ system audio ──────────────────────�
   period boundaries rather than pushed through a phase vocoder, which avoids the
   metallic ringing that gives most voice changers away. Fricatives take a
   separate path that leaves their transients intact.
+- **Cleaning that knows what a voice is.** Mouse clicks, typing and knocks are
+  ducked through a look-ahead; fans, hum and hiss are subtracted band by band.
+  Both use the pitch tracker to tell speech from noise, which is why a held
+  "aaah" survives instead of fading out halfway through the way it does under
+  suppressors that decide from level alone.
 - **A soundboard that does not fight the voice.** Samples are decoded to memory
   up front, triggered from global shortcuts, and mixed before a look-ahead
   limiter so a meme and a shout at the same time do not clip.
 - **System audio without the routing dance.** Sound is copied from other apps
   with a Core Audio process tap, so what you share keeps playing normally
   through your own headphones and the volume keys keep working.
-- **Latency you choose.** 32, 42 or 52 ms end to end, trading the lowest
+- **Air rebuilt rather than repeated.** Above five kilohertz a voice is breath
+  and hiss, and a pitch shifter repeats that into a buzz locked to the new note
+  — most of why shifted voices sound shifted. That band is measured and
+  regenerated as fresh noise instead, moved by the formant ratio so a smaller
+  speaker's fricatives sit higher.
+- **Presets that aim at a pitch.** "Sound like a woman" is 200 Hz, not a
+  multiplier: a ratio that suits a deep voice overshoots a light one. Kurarin
+  measures where your voice normally sits and works out the rest, slowly enough
+  that your intonation survives.
+- **Latency you choose.** 36, 46 or 56 ms end to end, trading the lowest
   fundamental the pitch tracker can follow against delay.
 
 ## Requirements
