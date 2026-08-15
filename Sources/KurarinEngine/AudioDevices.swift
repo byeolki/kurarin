@@ -191,6 +191,37 @@ public enum AudioDevices {
         return status == noErr
     }
 
+    /// Watches the machine's device list.
+    ///
+    /// A USB microphone can be unplugged mid-call, and the aggregate device
+    /// built on top of it dies with it. Without this the engine would keep
+    /// running against a device that no longer exists and simply go quiet.
+    public final class Observer {
+        private let address = AudioDevices.address(kAudioHardwarePropertyDevices)
+        private let listener: AudioObjectPropertyListenerBlock
+
+        public init(onChange: @escaping @Sendable () -> Void) {
+            listener = { _, _ in onChange() }
+            var addressCopy = address
+            AudioObjectAddPropertyListenerBlock(
+                AudioObjectID(kAudioObjectSystemObject),
+                &addressCopy,
+                DispatchQueue.main,
+                listener
+            )
+        }
+
+        deinit {
+            var addressCopy = address
+            AudioObjectRemovePropertyListenerBlock(
+                AudioObjectID(kAudioObjectSystemObject),
+                &addressCopy,
+                DispatchQueue.main,
+                listener
+            )
+        }
+    }
+
     public static func nominalSampleRate(of device: AudioObjectID) -> Double {
         Double(value(of: device, address(kAudioDevicePropertyNominalSampleRate), default: Float64(48000)))
     }

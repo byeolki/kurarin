@@ -55,6 +55,7 @@ final class AppModel: ObservableObject {
     private let hotKeyManager = HotKeyManager()
     private let defaults = UserDefaults.standard
     private var meterTimer: Timer?
+    private var deviceObserver: AudioDevices.Observer?
     private var previousDefaultInput: AudioDeviceInfo?
     private var isRestoring = true
 
@@ -67,6 +68,7 @@ final class AppModel: ObservableObject {
         static let slots = "soundboardSlots"
         static let hotKeys = "hotKeys"
         static let takeOver = "takeOverSystemInput"
+        static let displacedInput = "displacedInputUID"
     }
 
     init() {
@@ -74,6 +76,19 @@ final class AppModel: ObservableObject {
         presets = store.loadAll()
         restoreSettings()
         isRestoring = false
+        returnDisplacedInputDevice()
+
+        // Quitting from the Dock, from another app's menu or by logging out
+        // never reaches the menu bar's Quit item, and leaving the system input
+        // pointed at a silent virtual device would break the microphone for
+        // every other application.
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.stop() }
+        }
 
         hotKeyManager.handler = { [weak self] action in
             self?.perform(action)
@@ -83,6 +98,10 @@ final class AppModel: ObservableObject {
         meterTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.pollMeters() }
         }
+
+        deviceObserver = AudioDevices.Observer { [weak self] in
+            MainActor.assumeIsolated { self?.devicesChanged() }
+        }
     }
 
     // MARK: - Devices
@@ -91,6 +110,44 @@ final class AppModel: ObservableObject {
         inputDevices = AudioDevices.inputDevices()
         outputDevices = AudioDevices.outputDevices()
         isDriverInstalled = AudioDevices.isDriverInstalled
+    }
+
+    /// A device came or went. Only a device the engine is currently using is
+    /// worth acting on; anything else just refreshes the pickers.
+    private func devicesChanged() {
+        refreshDevices()
+        guard isRunning else { return }
+
+        if let microphone = engine.configuration.microphone,
+           !inputDevices.contains(where: { $0.uid == microphone.uid }) {
+            fallBackToDefaults(after: "\(microphone.name) was disconnected")
+            return
+        }
+        if let monitor = engine.configuration.monitor,
+           !outputDevices.contains(where: { $0.uid == monitor.uid }) {
+            fallBackToDefaults(after: "\(monitor.name) was disconnected")
+        }
+    }
+
+    /// Clears any selection that no longer resolves and restarts on whatever the
+    /// system considers default, rather than leaving a running engine attached
+    /// to a device that is gone.
+    private func fallBackToDefaults(after reason: String) {
+        isRestoring = true
+        if let uid = selectedMicrophoneUID, !inputDevices.contains(where: { $0.uid == uid }) {
+            selectedMicrophoneUID = nil
+        }
+        if let uid = selectedMonitorUID, !outputDevices.contains(where: { $0.uid == uid }) {
+            selectedMonitorUID = nil
+        }
+        isRestoring = false
+        saveSettings()
+
+        stop()
+        start()
+        if statusMessage == nil {
+            statusMessage = "\(reason). Switched to the system default."
+        }
     }
 
     private var selectedMicrophone: AudioDeviceInfo? {
@@ -133,7 +190,11 @@ final class AppModel: ObservableObject {
                 // Roblox and similar clients have no microphone picker and just
                 // follow the system default, so this is the only way to reach
                 // them. The previous choice is restored on stop.
-                previousDefaultInput = AudioDevices.defaultInputDevice()
+                let displaced = AudioDevices.defaultInputDevice()
+                previousDefaultInput = displaced
+                // Also on disk: if the app is killed rather than quit, the next
+                // launch is the only chance to undo this.
+                defaults.set(displaced?.uid, forKey: Keys.displacedInput)
                 AudioDevices.setDefaultInputDevice(virtualDevice)
             }
         } catch {
@@ -152,6 +213,20 @@ final class AppModel: ObservableObject {
             AudioDevices.setDefaultInputDevice(previousDefaultInput)
             self.previousDefaultInput = nil
         }
+        defaults.removeObject(forKey: Keys.displacedInput)
+    }
+
+    /// Undoes a takeover that a previous run never got to undo.
+    ///
+    /// Only acts when the system is still pointed at the virtual device: if the
+    /// user has since chosen something else, that choice is theirs to keep.
+    private func returnDisplacedInputDevice() {
+        guard let uid = defaults.string(forKey: Keys.displacedInput) else { return }
+        defaults.removeObject(forKey: Keys.displacedInput)
+
+        guard AudioDevices.defaultInputDevice()?.uid == AudioDevices.virtualDeviceUID,
+              let device = inputDevices.first(where: { $0.uid == uid }) else { return }
+        AudioDevices.setDefaultInputDevice(device)
     }
 
     func toggleRunning() {
