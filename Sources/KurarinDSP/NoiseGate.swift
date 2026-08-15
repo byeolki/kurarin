@@ -15,8 +15,13 @@ public final class NoiseGate: AudioProcessor {
     public var enabled: Bool = true
 
     private let sampleRate: Float
-    private var envelope: Float = 0
-    private var gain: Float = 0
+    /// Readable inside the module because the output cannot show them: the gate
+    /// only multiplies, and a gain stuck at the smallest denormal times any
+    /// signal underflows to a clean zero. The only way to tell a gate that has
+    /// reached silence from one that is stalled in the denormal range is to
+    /// look at the state itself.
+    private(set) var envelope: Float = 0
+    private(set) var gain: Float = 0
     private var holdCounter: Int = 0
     private var isOpen = false
 
@@ -69,6 +74,13 @@ public final class NoiseGate: AudioProcessor {
 
             buffer[i] *= gain
         }
+
+        // Both of these approach zero exponentially while the gate is shut,
+        // which is most of the time in a quiet room. Left alone they spend the
+        // silence in the denormal range, where the arithmetic costs orders of
+        // magnitude more than it does here.
+        envelope = withoutDenormals(envelope)
+        gain = withoutDenormals(gain)
     }
 
     private func coefficient(forMilliseconds ms: Float) -> Float {

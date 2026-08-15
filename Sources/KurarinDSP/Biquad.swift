@@ -130,7 +130,7 @@ public final class Biquad: AudioProcessor {
         }
         // Denormals decay to zero here rather than costing cycles for minutes
         // after a signal stops.
-        z1 = s1.isNormal || s1 == 0 ? s1 : 0
-        z2 = s2.isNormal || s2 == 0 ? s2 : 0
+        z1 = withoutDenormals(s1)
+        z2 = withoutDenormals(s2)
     }
 }
