@@ -21,7 +21,13 @@ $(DRIVER_BINARY): Driver/KurarinDriver.c Driver/Info.plist
 	@mkdir -p $(DRIVER_BUNDLE)/Contents/MacOS
 	cp Driver/Info.plist $(DRIVER_BUNDLE)/Contents/Info.plist
 	clang $(CFLAGS) -bundle $(FRAMEWORKS) -o $@ Driver/KurarinDriver.c
-	codesign --force --sign - --timestamp=none $(DRIVER_BUNDLE)
+	# A quarantined plug-in is not merely refused, it is never looked at:
+	# coreaudiod skips it during its scan and says nothing about why. The
+	# attribute arrives on its own — a build directory inside iCloud Drive is
+	# enough — so it is cleared here as well as at install time. xattr has no
+	# -r, hence find.
+	find $(DRIVER_BUNDLE) -exec xattr -c {} + && \
+		codesign --force --sign - --timestamp=none $(DRIVER_BUNDLE)
 
 # --- application ----------------------------------------------------------
 
