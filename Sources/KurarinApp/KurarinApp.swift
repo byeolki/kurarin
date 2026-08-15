@@ -426,18 +426,47 @@ struct SlotTile: View {
             }
 
             if let slot {
-                Text(slot.name).lineLimit(2).font(.callout)
+                Text(slot.name).lineLimit(1).font(.callout)
                 if let error = model.slotErrors[index] {
                     Text(error).font(.caption2).foregroundStyle(.orange).lineLimit(3)
                 } else {
-                    Button("Play") { model.playSlot(index) }
+                    HStack(spacing: 6) {
+                        Button("Play") { model.playSlot(index) }
+                        Button("Stop") { model.stopSlot(index) }
+                    }
+                    .controlSize(.small)
+
+                    HStack(spacing: 4) {
+                        Image(systemName: "speaker.wave.2").font(.caption2).foregroundStyle(.tertiary)
+                        Slider(
+                            value: Binding(
+                                get: { slot.volume },
+                                set: { model.setVolume($0, for: index) }
+                            ),
+                            in: 0...2
+                        )
+                    }
+                    Toggle("Loop", isOn: Binding(
+                        get: { slot.loops },
+                        set: { model.setLoops($0, for: index) }
+                    ))
+                    .toggleStyle(.checkbox)
+                    .font(.caption)
                 }
             } else {
                 Text("Empty").foregroundStyle(.tertiary).font(.callout)
+                Button("Choose…") { model.chooseFile(for: index) }
+                    .controlSize(.small)
+            }
+
+            Spacer(minLength: 0)
+
+            if let shortcut = model.shortcutName(forSlot: index) {
+                Text(shortcut).font(.caption2).monospaced().foregroundStyle(.tertiary)
             }
         }
         .padding(10)
-        .frame(height: 110, alignment: .topLeading)
+        .frame(height: 150, alignment: .topLeading)
         .background(isTargeted ? Color.accentColor.opacity(0.2) : Color.secondary.opacity(0.08))
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .onDrop(of: [.fileURL], isTargeted: $isTargeted) { providers in

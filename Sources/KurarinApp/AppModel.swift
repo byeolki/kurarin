@@ -2,6 +2,7 @@ import Foundation
 import AppKit
 import CoreAudio
 import SwiftUI
+import UniformTypeIdentifiers
 import Combine
 import KurarinDSP
 import KurarinEngine
@@ -369,6 +370,40 @@ final class AppModel: ObservableObject {
         engine.soundboard.play(slot: index, gain: slot.volume, loops: slot.loops)
     }
 
+    func stopSlot(_ index: Int) {
+        engine.soundboard.stop(slot: index)
+    }
+
+    func setVolume(_ volume: Float, for index: Int) {
+        guard var slot = slots[safe: index] ?? nil else { return }
+        slot.volume = volume
+        slots[index] = slot
+        // Applied to the mixer as well as the slot, so dragging the slider is
+        // audible on a sample that is already looping.
+        engine.soundboard.setGain(volume, at: index)
+        saveSettings()
+    }
+
+    func setLoops(_ loops: Bool, for index: Int) {
+        guard var slot = slots[safe: index] ?? nil else { return }
+        slot.loops = loops
+        slots[index] = slot
+        saveSettings()
+    }
+
+    /// Opens a file picker for a slot. Dropping a file on the slot does the
+    /// same thing; this is for people who do not want to go hunting in Finder.
+    func chooseFile(for index: Int) {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.audio]
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Assign"
+        panel.message = "Choose a sound for slot \(index + 1)"
+
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        assign(url: url, to: index)
+    }
+
     func stopAllSounds() {
         engine.soundboard.stopAll()
     }
@@ -462,6 +497,12 @@ final class AppModel: ObservableObject {
         }
         hotKeys[action] = hotKey
         saveSettings()
+    }
+
+    /// The shortcut printed on a soundboard tile, if the slot has one.
+    func shortcutName(forSlot index: Int) -> String? {
+        guard let action = HotKeyManager.Action(rawValue: "playSlot\(index)") else { return nil }
+        return hotKeys[action]?.displayName
     }
 
     func clearHotKey(for action: HotKeyManager.Action) {
