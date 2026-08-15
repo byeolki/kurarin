@@ -66,6 +66,17 @@ public final class VoiceShifter: AudioProcessor {
     private var analysisPosition: Double = 0
 
     private var samplesSinceAnalysis: Int = 0
+    /// How many grains have been laid down from the current analysis mark. A
+    /// raised pitch needs more output grains than there are input periods, so
+    /// beyond the first the same audio is being repeated.
+    private var reuseCount = 0
+    private var random: UInt64 = 0x9E3779B97F4A7C15
+    /// The voiced verdict after debouncing. The two paths through this unit
+    /// sound different — one moves pitch, the other cannot — so flipping
+    /// between them on a marginal frame is audible as a stutter in the middle
+    /// of a word. A change has to be agreed on twice before it is acted on.
+    private var stableVoiced = false
+    private var voicedDisagreements = 0
     private let tracker: PitchTracker
     /// Whether this instance is responsible for feeding the tracker. When the
     /// chain owns it, the chain has already pushed this block before the
@@ -128,6 +139,9 @@ public final class VoiceShifter: AudioProcessor {
         synthesisPosition = 0
         analysisPosition = 0
         samplesSinceAnalysis = 0
+        reuseCount = 0
+        stableVoiced = false
+        voicedDisagreements = 0
         if ownsTracker { tracker.reset() }
     }
 
@@ -164,6 +178,8 @@ public final class VoiceShifter: AudioProcessor {
         }
         inputWritten += frameCount
 
+        updateVoicedState()
+
         guard ownsTracker else { return }
         tracker.push(buffer, frameCount: frameCount)
         samplesSinceAnalysis += frameCount
@@ -173,12 +189,25 @@ public final class VoiceShifter: AudioProcessor {
         }
     }
 
+    private func updateVoicedState() {
+        let raw = tracker.isVoiced && tracker.periodSamples > 0
+        if raw == stableVoiced {
+            voicedDisagreements = 0
+        } else {
+            voicedDisagreements += 1
+            if voicedDisagreements >= 2 {
+                stableVoiced = raw
+                voicedDisagreements = 0
+            }
+        }
+    }
+
     private func generateGrains() {
         let formant = min(max(formantRatio, 0.5), VoiceShifter.maximumFormantRatio)
         let pitch = min(max(pitchRatio, 0.5), 2)
 
         while true {
-            let voiced = tracker.isVoiced && tracker.periodSamples > 0
+            let voiced = stableVoiced
             let period = voiced
                 ? min(max(tracker.periodSamples, minimumPeriod), maximumPeriod)
                 : unvoicedGrain
@@ -188,7 +217,9 @@ public final class VoiceShifter: AudioProcessor {
             // synthesis spacing is shorter than a period the same analysis mark
             // serves several grains, which is exactly how PSOLA raises pitch
             // without stretching time.
+            var advancedAnalysis = false
             while analysisPosition + Double(period) < synthesisPosition {
+                advancedAnalysis = true
                 analysisPosition += Double(period)
                 if voiced {
                     let target = refineToGlottalPulse(near: analysisPosition, period: period)
@@ -209,8 +240,43 @@ public final class VoiceShifter: AudioProcessor {
             let readReach = analysisPosition + Double(period * formant) + 2
             if readReach >= Double(inputWritten) { break }
 
-            layDown(period: period, formant: formant, advance: Float(advance))
-            synthesisPosition += advance
+            reuseCount = advancedAnalysis ? 0 : reuseCount + 1
+
+            // Reading the same audio again is what makes a shifted voice sound
+            // shifted. The harmonics survive repetition — they are periodic, so
+            // one period back is the same waveform — but the breath and the
+            // fricative noise riding on top of them are not, and repeating
+            // those turns aperiodic noise into a buzz locked to the new pitch.
+            // Measured on a breathy vowel raised by half: the noise above three
+            // kilohertz went from a periodicity of 0.01 to 0.27, sitting exactly
+            // on the new fundamental.
+            //
+            // So a repeat is read from a different glottal period instead: whole
+            // periods back, which leaves the harmonic content aligned and gives
+            // the noise a fresh sample of itself.
+            var readOffset = 0.0
+            if voiced && reuseCount > 0 {
+                // Bounded in time rather than in periods. Further back
+                // decorrelates the noise better, but it is also older audio,
+                // and past thirty-odd milliseconds the mouth has moved on —
+                // borrowing from there smears one sound into the next. A deep
+                // voice gets fewer choices, which is the right answer anyway:
+                // its periods are long enough that even one is a different
+                // slice of noise.
+                let maximumBack = max(1, min(8, Int(0.035 * sampleRate / period)))
+                let candidate = Double(period) * Double(1 + Int(nextRandom()) % maximumBack)
+                if analysisPosition - candidate - Double(period) * Double(formant) - 2 > 0 {
+                    readOffset = -candidate
+                }
+            }
+
+            layDown(period: period, formant: formant, advance: Float(advance), readOffset: readOffset)
+
+            // Real voices are not metronomes: consecutive glottal periods differ
+            // by a fraction of a percent, and an output with none of that
+            // variation is heard as synthetic however good the spectrum is.
+            let jitter = 1 + (Double(nextRandom() % 1000) / 1000 - 0.5) * 0.006
+            synthesisPosition += advance * jitter
         }
     }
 
@@ -259,7 +325,12 @@ public final class VoiceShifter: AudioProcessor {
         return Double(index) + Double(subSample)
     }
 
-    private func layDown(period: Float, formant: Float, advance: Float) {
+    private func nextRandom() -> UInt64 {
+        random = random &* 6364136223846793005 &+ 1442695040888963407
+        return random >> 33
+    }
+
+    private func layDown(period: Float, formant: Float, advance: Float, readOffset: Double = 0) {
         let halfOutput = Int(period)
         guard halfOutput > 1 else { return }
 
@@ -294,7 +365,8 @@ public final class VoiceShifter: AudioProcessor {
                         ? windowTable[windowIndex] + (windowTable[windowIndex + 1] - windowTable[windowIndex]) * windowFraction
                         : windowTable[VoiceShifter.windowTableSize - 1]
 
-                    let sourcePosition = analysisPosition + Double(offsetFromCentre) * Double(formant)
+                    let sourcePosition = analysisPosition + readOffset
+                        + Double(offsetFromCentre) * Double(formant)
                     let sample = interpolate(source, at: sourcePosition)
 
                     destination[outputIndex & ringMask] += sample * w * gain
