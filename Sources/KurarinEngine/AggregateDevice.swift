@@ -120,7 +120,11 @@ public final class AggregateDevice {
 
     /// Channels appear in the order the sub-devices were listed, with tap
     /// channels appended after them.
-    private static func computeLayout(
+    ///
+    /// Pure, and therefore the one part of building an aggregate that can be
+    /// checked without one existing. Getting an offset wrong here is silent:
+    /// the engine reads a real device's real audio, just the wrong device's.
+    static func computeLayout(
         microphone: AudioDeviceInfo,
         virtualDevice: AudioDeviceInfo,
         monitor: AudioDeviceInfo?,
