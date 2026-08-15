@@ -30,6 +30,11 @@ public final class KurarinEngine {
     public private(set) var isRunning = false
     public private(set) var configuration = Configuration()
 
+    /// Why system capture is not running, when the rest of the engine is.
+    /// A refused permission or a tap that could not be built costs that one
+    /// feature, so it is reported rather than thrown.
+    public private(set) var captureFailure: String?
+
     /// Peak levels for the meters, updated once per callback.
     public private(set) var inputLevel: Float = 0
     public private(set) var outputLevel: Float = 0
@@ -99,8 +104,15 @@ public final class KurarinEngine {
         // A denied capture permission should cost the capture feature, not the
         // whole engine, so a failure here is logged into the tap being absent
         // rather than thrown.
+        captureFailure = nil
         if let source = configuration.captureSource {
-            tap = try? SystemAudioTap(source: source)
+            do {
+                tap = try SystemAudioTap(source: source)
+            } catch {
+                // Silently losing system capture leaves the user wondering why
+                // nobody can hear their music.
+                captureFailure = error.localizedDescription
+            }
         }
 
         let device = try AggregateDevice(

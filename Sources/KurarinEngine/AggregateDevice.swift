@@ -183,8 +183,14 @@ public final class SystemAudioTap {
             // The exclusion list holds audio object IDs, not process IDs, and
             // the two are not interchangeable — passing a pid here silently
             // excludes nothing, or the wrong process.
+            let excluded = SystemAudioTap.ownProcessObjects()
+            guard !excluded.isEmpty else {
+                // Refusing to build the tap costs the capture feature. Building
+                // one that excludes nothing costs the whole session.
+                throw AudioDeviceError.selfExclusionUnavailable
+            }
             description = CATapDescription(
-                stereoGlobalTapButExcludeProcesses: SystemAudioTap.ownProcessObjects()
+                stereoGlobalTapButExcludeProcesses: excluded
             )
         case .processes(let objects):
             description = CATapDescription(

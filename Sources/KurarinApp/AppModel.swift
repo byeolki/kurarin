@@ -86,6 +86,7 @@ final class AppModel: ObservableObject {
     private let hotKeyManager = HotKeyManager()
     private let defaults = UserDefaults.standard
     private var meterTimer: Timer?
+    private var slotSaveTimer: Timer?
     private var deviceObserver: AudioDevices.Observer?
     /// Held by UID, not by object: a device that has been unplugged in the
     /// meantime keeps its UID but gets a new object ID when it comes back, and
@@ -224,7 +225,7 @@ final class AppModel: ObservableObject {
             applyCurrentPreset()
             reloadAllSlots()
             isRunning = true
-            statusMessage = nil
+            statusMessage = engine.captureFailure
 
             if takeOverSystemInput, let virtualDevice = AudioDevices.virtualDevice() {
                 // Roblox and similar clients have no microphone picker and just
@@ -274,8 +275,11 @@ final class AppModel: ObservableObject {
         guard AudioDevices.systemDefaultInputUID() == AudioDevices.virtualDeviceUID else { return }
 
         let devices = AudioDevices.inputDevices()
-        guard let device = devices.first(where: { $0.uid == uid }) ?? devices.first else { return }
-        AudioDevices.setDefaultInputDevice(device)
+        let replacement = devices.first { $0.uid == uid }
+            ?? devices.first { !$0.isVirtual }
+            ?? devices.first
+        guard let replacement else { return }
+        AudioDevices.setDefaultInputDevice(replacement)
     }
 
     /// Undoes a takeover that a previous run never got to undo.
@@ -388,7 +392,11 @@ final class AppModel: ObservableObject {
         guard slots.indices.contains(index) else { return }
         slots[index] = nil
         slotErrors[index] = nil
-        engine.soundboard.clear(slot: index)
+        // While stopped there is nothing draining the queue; the next start
+        // reconciles every slot with the mixer anyway.
+        if engine.isRunning {
+            engine.soundboard.clear(slot: index)
+        }
         saveSettings()
     }
 
@@ -402,8 +410,10 @@ final class AppModel: ObservableObject {
         engine.soundboard.stop(slot: index)
     }
 
-    /// Live while dragging. Deliberately does not persist: `commitSlotEdits`
-    /// does that once, when the slider is released.
+    /// Live while dragging. The save is coalesced rather than skipped, because
+    /// a slider can also be moved with the keyboard, where there is no drag to
+    /// end — but writing the slot list on every frame of a drag is a lot of
+    /// encoding for a value that is still moving.
     func setVolume(_ volume: Float, for index: Int) {
         guard var slot = slots[safe: index] ?? nil else { return }
         slot.volume = volume
@@ -415,10 +425,20 @@ final class AppModel: ObservableObject {
         if engine.isRunning {
             engine.soundboard.setGain(volume, at: index)
         }
+        scheduleSlotSave()
     }
 
     func commitSlotEdits() {
+        slotSaveTimer?.invalidate()
+        slotSaveTimer = nil
         saveSettings()
+    }
+
+    private func scheduleSlotSave() {
+        slotSaveTimer?.invalidate()
+        slotSaveTimer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: false) { [weak self] _ in
+            Task { @MainActor in self?.commitSlotEdits() }
+        }
     }
 
     func setLoops(_ loops: Bool, for index: Int) {
@@ -442,6 +462,7 @@ final class AppModel: ObservableObject {
     }
 
     func stopAllSounds() {
+        guard engine.isRunning else { return }
         engine.soundboard.stopAll()
     }
 
@@ -464,9 +485,17 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Brings the mixer in line with the slot list. Called on start, which is
+    /// the only moment the two are guaranteed to agree — edits made while the
+    /// engine was stopped never reached it.
     private func reloadAllSlots() {
-        for index in slots.indices where slots[index] != nil {
-            loadSlot(index)
+        for index in slots.indices {
+            if slots[index] != nil {
+                loadSlot(index)
+            } else {
+                engine.soundboard.clear(slot: index)
+                slotErrors[index] = nil
+            }
         }
     }
 

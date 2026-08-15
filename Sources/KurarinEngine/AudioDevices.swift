@@ -1,5 +1,6 @@
 import Foundation
 import CoreAudio
+import os
 
 public struct AudioDeviceInfo: Identifiable, Equatable, Sendable {
     public let id: AudioObjectID
@@ -7,15 +8,25 @@ public struct AudioDeviceInfo: Identifiable, Equatable, Sendable {
     public let name: String
     public let inputChannels: Int
     public let outputChannels: Int
+    public let transportType: UInt32
 
     public var canRecord: Bool { inputChannels > 0 }
     public var canPlay: Bool { outputChannels > 0 }
+
+    /// Another app's loopback driver or aggregate — BlackHole, Loopback, a
+    /// multi-output the user built. Perfectly valid to choose on purpose, and a
+    /// bad guess to fall back to: nothing may be writing to it.
+    public var isVirtual: Bool {
+        transportType == kAudioDeviceTransportTypeVirtual
+            || transportType == kAudioDeviceTransportTypeAggregate
+    }
 }
 
 public enum AudioDeviceError: Error, LocalizedError {
     case coreAudio(OSStatus, String)
     case driverNotInstalled
     case deviceUnavailable(String)
+    case selfExclusionUnavailable
 
     public var errorDescription: String? {
         switch self {
@@ -25,6 +36,8 @@ public enum AudioDeviceError: Error, LocalizedError {
             return "The Kurarin virtual microphone is not installed. Run sudo ./scripts/install-driver.sh."
         case .deviceUnavailable(let name):
             return "\(name) is no longer available."
+        case .selfExclusionUnavailable:
+            return "System audio sharing is off: Kurarin could not identify itself to the audio system, and capturing everything would have included its own output."
         }
     }
 }
@@ -146,7 +159,12 @@ public enum AudioDevices {
                 uid: uid,
                 name: name,
                 inputChannels: channelCount(of: id, scope: kAudioObjectPropertyScopeInput),
-                outputChannels: channelCount(of: id, scope: kAudioObjectPropertyScopeOutput)
+                outputChannels: channelCount(of: id, scope: kAudioObjectPropertyScopeOutput),
+                transportType: value(
+                    of: id,
+                    address(kAudioDevicePropertyTransportType),
+                    default: UInt32(kAudioDeviceTransportTypeUnknown)
+                )
             )
         }
     }
@@ -195,7 +213,17 @@ public enum AudioDevices {
         if let device = devices.first(where: { $0.id == id }), !isOwnDevice(device.uid) {
             return device
         }
-        return devices.first { $0.canRecord && !isOwnDevice($0.uid) }
+        return firstUsable(in: devices, where: \.canRecord)
+    }
+
+    /// Real hardware first. Falling back onto somebody else's loopback driver
+    /// looks like a working microphone and records silence.
+    static func firstUsable(
+        in devices: [AudioDeviceInfo],
+        where matches: (AudioDeviceInfo) -> Bool
+    ) -> AudioDeviceInfo? {
+        let candidates = devices.filter { matches($0) && !isOwnDevice($0.uid) }
+        return candidates.first { !$0.isVirtual } ?? candidates.first
     }
 
     public static func defaultOutputDevice() -> AudioDeviceInfo? {
@@ -208,7 +236,7 @@ public enum AudioDevices {
         if let device = devices.first(where: { $0.id == id }), !isOwnDevice(device.uid) {
             return device
         }
-        return devices.first { $0.canPlay && !isOwnDevice($0.uid) }
+        return firstUsable(in: devices, where: \.canPlay)
     }
 
     /// Points the system's default input at a device.
@@ -237,7 +265,18 @@ public enum AudioDevices {
     /// exclude that process has nothing to name. Briefly running an empty
     /// callback is the cheapest way to exist. Silence is written explicitly
     /// because an output buffer arrives uninitialised.
+    ///
+    /// Blocks its caller for a few tens of milliseconds, so it runs at most
+    /// once: after the engine's first callback the process object exists for
+    /// good, and every later start finds it without coming here.
+    private static let hasAnnounced = OSAllocatedUnfairLock(initialState: false)
+
     static func announceProcessToHAL() {
+        let alreadyDone = hasAnnounced.withLock { done -> Bool in
+            defer { done = true }
+            return done
+        }
+        guard !alreadyDone else { return }
         guard let device = virtualDevice() ?? defaultOutputDevice() else { return }
 
         var procID: AudioDeviceIOProcID?

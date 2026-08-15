@@ -105,6 +105,10 @@ public final class HotKeyManager: @unchecked Sendable {
 
     private var registrations: [Action: EventHotKeyRef] = [:]
     private var identifiers: [UInt32: Action] = [:]
+    /// Keys currently held down. A held hot key repeats, and a repeating mute
+    /// toggle flaps the microphone open and shut for as long as the finger
+    /// stays there.
+    private var heldActions: Set<Action> = []
     private var nextIdentifier: UInt32 = 1
     private var eventHandler: EventHandlerRef?
 
@@ -120,10 +124,17 @@ public final class HotKeyManager: @unchecked Sendable {
     }
 
     private func installEventHandler() {
-        var spec = EventTypeSpec(
-            eventClass: OSType(kEventClassKeyboard),
-            eventKind: UInt32(kEventHotKeyPressed)
-        )
+        // Releases are watched only to know when a key stops being held.
+        var specs = [
+            EventTypeSpec(
+                eventClass: OSType(kEventClassKeyboard),
+                eventKind: UInt32(kEventHotKeyPressed)
+            ),
+            EventTypeSpec(
+                eventClass: OSType(kEventClassKeyboard),
+                eventKind: UInt32(kEventHotKeyReleased)
+            ),
+        ]
         let context = Unmanaged.passUnretained(self).toOpaque()
 
         InstallEventHandler(GetApplicationEventTarget(), { _, event, userData in
@@ -144,9 +155,16 @@ public final class HotKeyManager: @unchecked Sendable {
                 return noErr
             }
 
+            if GetEventKind(event) == UInt32(kEventHotKeyReleased) {
+                manager.heldActions.remove(action)
+                return noErr
+            }
+
+            // One action per press, however long the key is held.
+            guard manager.heldActions.insert(action).inserted else { return noErr }
             MainActor.assumeIsolated { manager.handler?(action) }
             return noErr
-        }, 1, &spec, context, &eventHandler)
+        }, specs.count, &specs, context, &eventHandler)
     }
 
     @discardableResult
@@ -177,6 +195,8 @@ public final class HotKeyManager: @unchecked Sendable {
         guard let reference = registrations.removeValue(forKey: action) else { return }
         UnregisterEventHotKey(reference)
         identifiers = identifiers.filter { $0.value != action }
+        // Its release will never arrive now, so the held state has to go with it.
+        heldActions.remove(action)
     }
 
     public func unregisterAll() {

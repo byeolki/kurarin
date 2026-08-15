@@ -75,9 +75,12 @@ path, because there is no partial update path worth the bugs.
 without taking it away from them, which is why sharing music does not make the
 sound vanish from your own headphones.
 
-- Everything: `CATapDescription(stereoGlobalTapButExcludeProcesses:)` with
-  Kurarin's own PID excluded. Leaving that out feeds the monitoring output back
-  into the tap and the mix howls.
+- Everything: `CATapDescription(stereoGlobalTapButExcludeProcesses:)` excluding
+  Kurarin itself. The list takes audio object IDs, not process IDs, and the HAL
+  only has an object for a process that has already done I/O — so the engine
+  announces itself with a throwaway callback if it has to. Getting this wrong
+  means the engine captures what it writes to the virtual device and mixes it
+  back in, one block later, forever.
 - Chosen apps: `CATapDescription(stereoMixdownOfProcesses:)`. The user's choice
   is stored as bundle identifiers and resolved to live process objects when the
   tap is built, since a process object ID only lives as long as its app.
