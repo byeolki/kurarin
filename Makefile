@@ -27,14 +27,14 @@ $(DRIVER_BINARY): Driver/KurarinDriver.c Driver/Info.plist
 
 app: $(APP_BINARY)
 
+# Built for both architectures to match the driver, which clang makes universal
+# in one pass. An Intel Mac loading a universal driver into coreaudiod but
+# unable to run the app that feeds it would be a strange thing to ship.
 $(APP_BINARY): $(shell find Sources -name '*.swift' 2>/dev/null) Resources/App-Info.plist
-	swift build -c release --product KurarinApp
+	swift build -c release --product KurarinApp --arch arm64 --arch x86_64
 	@mkdir -p $(APP_BUNDLE)/Contents/MacOS $(APP_BUNDLE)/Contents/Resources
 	cp Resources/App-Info.plist $(APP_BUNDLE)/Contents/Info.plist
-	cp .build/release/KurarinApp $@
-	@if [ -d .build/release/Kurarin_KurarinPresets.bundle ]; then \
-		cp -R .build/release/Kurarin_KurarinPresets.bundle $(APP_BUNDLE)/Contents/Resources/; \
-	fi
+	cp .build/apple/Products/Release/KurarinApp $@
 	# Finder tags a new .app bundle with metadata that codesign refuses to
 	# sign over, and it can reappear between commands, so the clear and the
 	# signing happen in one shell invocation. This xattr has no -r flag.
