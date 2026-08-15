@@ -12,8 +12,17 @@ public final class VoiceChain {
     public private(set) var latencyMode: LatencyMode
 
     private let gate: NoiseGate
+    private let suppressor: TransientSuppressor
     private let highPass: Biquad
     private var shifter: VoiceShifter
+    /// One analysis, shared. The gate uses it to know a held note is still a
+    /// note, the suppressor uses it to know a click is not one, and the shifter
+    /// uses it to place its grains — all from the same verdict on the same
+    /// samples, rather than three units each analysing a slightly different
+    /// version of the signal.
+    private let tracker: PitchTracker
+    private var samplesSinceAnalysis = 0
+    private let analysisHop: Int
     private let eq: ParametricEQ
     private let drive: Drive
     private let reverb: Reverb
@@ -28,9 +37,13 @@ public final class VoiceChain {
         self.sampleRate = sampleRate
         self.latencyMode = latencyMode
 
+        tracker = PitchTracker(sampleRate: sampleRate, minimumHz: latencyMode.minimumPitchHz)
+        analysisHop = latencyMode.hopSize
+
         gate = NoiseGate(sampleRate: sampleRate)
+        suppressor = TransientSuppressor(sampleRate: sampleRate)
         highPass = Biquad(sampleRate: sampleRate)
-        shifter = VoiceShifter(sampleRate: sampleRate, latencyMode: latencyMode)
+        shifter = VoiceShifter(sampleRate: sampleRate, latencyMode: latencyMode, tracker: tracker)
         eq = ParametricEQ(sampleRate: sampleRate)
         drive = Drive(sampleRate: sampleRate)
         reverb = Reverb(sampleRate: sampleRate)
@@ -39,9 +52,9 @@ public final class VoiceChain {
         apply(parameters)
     }
 
-    /// Delay the chain introduces, in frames. Only the shifter contributes; the
-    /// limiter lives downstream in the mixer.
-    public var latencyFrames: Int { shifter.latencyFrames }
+    /// Delay the chain introduces, in frames. The limiter lives downstream in
+    /// the mixer and is counted separately.
+    public var latencyFrames: Int { shifter.latencyFrames + suppressor.lookaheadFrames }
 
     /// Rebuilds the shifter for a new latency mode.
     ///
@@ -50,7 +63,7 @@ public final class VoiceChain {
     public func setLatencyMode(_ mode: LatencyMode) {
         guard mode != latencyMode else { return }
         latencyMode = mode
-        shifter = VoiceShifter(sampleRate: sampleRate, latencyMode: mode)
+        shifter = VoiceShifter(sampleRate: sampleRate, latencyMode: mode, tracker: tracker)
         apply(parameters)
     }
 
@@ -67,6 +80,7 @@ public final class VoiceChain {
 
         gate.enabled = clamped.gateEnabled
         gate.thresholdDB = clamped.gateThresholdDB
+        suppressor.strength = clamped.clickSuppression
 
         if clamped.highPassHz != appliedHighPassHz {
             highPass.configure(kind: .highpass, frequency: clamped.highPassHz, q: 0.707)
@@ -89,6 +103,9 @@ public final class VoiceChain {
     }
 
     public func reset() {
+        tracker.reset()
+        samplesSinceAnalysis = 0
+        suppressor.reset()
         gate.reset()
         highPass.reset()
         shifter.reset()
@@ -102,6 +119,23 @@ public final class VoiceChain {
             for i in 0..<frameCount { buffer[i] *= inputGain }
         }
 
+        // Analysed before anything has been done to it: a gate that has
+        // already closed, or a click that has already been ducked, would make
+        // the tracker answer a question about audio nobody is going to hear.
+        tracker.push(buffer, frameCount: frameCount)
+        samplesSinceAnalysis += frameCount
+        while samplesSinceAnalysis >= analysisHop {
+            samplesSinceAnalysis -= analysisHop
+            tracker.analyse()
+        }
+        let voiced = tracker.isVoiced
+        suppressor.isVoiced = voiced
+        gate.isVoiced = voiced
+
+        // Clicks first: a key press is loud enough to hold a gate open, and
+        // removing it before the gate decides anything keeps the two from
+        // arguing.
+        suppressor.process(buffer, frameCount: frameCount)
         gate.process(buffer, frameCount: frameCount)
         highPass.process(buffer, frameCount: frameCount)
         shifter.process(buffer, frameCount: frameCount)

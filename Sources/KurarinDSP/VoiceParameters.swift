@@ -11,6 +11,9 @@ public struct VoiceParameters: Codable, Equatable, Sendable {
     public var gateEnabled: Bool
     public var gateThresholdDB: Float
 
+    /// How hard to duck mouse clicks, key presses and knocks. 0 is off.
+    public var clickSuppression: Float
+
     public var highPassHz: Float
 
     public var pitchRatio: Float
@@ -33,6 +36,7 @@ public struct VoiceParameters: Codable, Equatable, Sendable {
         inputGainDB: Float = 0,
         gateEnabled: Bool = true,
         gateThresholdDB: Float = -45,
+        clickSuppression: Float = 0.6,
         highPassHz: Float = 80,
         pitchRatio: Float = 1,
         formantRatio: Float = 1,
@@ -49,6 +53,7 @@ public struct VoiceParameters: Codable, Equatable, Sendable {
         self.inputGainDB = inputGainDB
         self.gateEnabled = gateEnabled
         self.gateThresholdDB = gateThresholdDB
+        self.clickSuppression = clickSuppression
         self.highPassHz = highPassHz
         self.pitchRatio = pitchRatio
         self.formantRatio = formantRatio
@@ -76,6 +81,7 @@ public struct VoiceParameters: Codable, Equatable, Sendable {
         inputGainDB       = value(.inputGainDB, defaults.inputGainDB)
         gateEnabled       = value(.gateEnabled, defaults.gateEnabled)
         gateThresholdDB   = value(.gateThresholdDB, defaults.gateThresholdDB)
+        clickSuppression  = value(.clickSuppression, defaults.clickSuppression)
         highPassHz        = value(.highPassHz, defaults.highPassHz)
         pitchRatio        = value(.pitchRatio, defaults.pitchRatio)
         formantRatio      = value(.formantRatio, defaults.formantRatio)
@@ -99,6 +105,7 @@ public struct VoiceParameters: Codable, Equatable, Sendable {
         var result = self
         result.inputGainDB = min(max(inputGainDB, -24), 24)
         result.gateThresholdDB = min(max(gateThresholdDB, -80), 0)
+        result.clickSuppression = min(max(clickSuppression, 0), 1)
         result.highPassHz = min(max(highPassHz, 20), 500)
         result.pitchRatio = min(max(pitchRatio, 0.5), 2)
         result.formantRatio = min(max(formantRatio, 0.5), 2)

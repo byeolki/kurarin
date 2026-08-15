@@ -413,6 +413,15 @@ struct VoiceTab: View {
                 }
 
                 Section("Cleanup") {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Slider(value: $model.editedParameters.clickSuppression, in: 0...1) {
+                            Text("Click and key noise")
+                        }
+                        Text("Removes mouse clicks, typing and knocks. It knows a held vowel from a click by its pitch, so turning it up does not eat the end of an “aaah”.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
                     Toggle("Noise gate", isOn: $model.editedParameters.gateEnabled)
                     Slider(value: $model.editedParameters.gateThresholdDB, in: -80...0) {
                         Text("Gate threshold")

@@ -67,11 +67,21 @@ public final class VoiceShifter: AudioProcessor {
 
     private var samplesSinceAnalysis: Int = 0
     private let tracker: PitchTracker
+    /// Whether this instance is responsible for feeding the tracker. When the
+    /// chain owns it, the chain has already pushed this block before the
+    /// shifter sees it.
+    private let ownsTracker: Bool
 
     private static let windowTableSize = 4096
     private let windowTable: [Float]
 
-    public init(sampleRate: Float, latencyMode: LatencyMode) {
+    /// - Parameter tracker: the chain's shared pitch tracker, already fed with
+    ///   this block's audio. Passing one in lets the gate and the click
+    ///   suppressor act on the same voiced/unvoiced verdict the shifter uses,
+    ///   rather than each unit running its own analysis over a slightly
+    ///   different version of the signal. Left out, the shifter keeps its own
+    ///   and feeds it, which is what the unit tests want.
+    public init(sampleRate: Float, latencyMode: LatencyMode, tracker: PitchTracker? = nil) {
         self.sampleRate = sampleRate
         self.latencyMode = latencyMode
 
@@ -92,7 +102,13 @@ public final class VoiceShifter: AudioProcessor {
         outputRing = [Float](repeating: 0, count: size)
         ringMask = size - 1
 
-        tracker = PitchTracker(sampleRate: sampleRate, minimumHz: latencyMode.minimumPitchHz)
+        if let tracker {
+            self.tracker = tracker
+            ownsTracker = false
+        } else {
+            self.tracker = PitchTracker(sampleRate: sampleRate, minimumHz: latencyMode.minimumPitchHz)
+            ownsTracker = true
+        }
 
         windowTable = (0..<VoiceShifter.windowTableSize).map { index in
             let phase = Float(index) / Float(VoiceShifter.windowTableSize - 1)
@@ -112,7 +128,7 @@ public final class VoiceShifter: AudioProcessor {
         synthesisPosition = 0
         analysisPosition = 0
         samplesSinceAnalysis = 0
-        tracker.reset()
+        if ownsTracker { tracker.reset() }
     }
 
     public func process(_ buffer: UnsafeMutablePointer<Float>, frameCount: Int) {
@@ -148,6 +164,7 @@ public final class VoiceShifter: AudioProcessor {
         }
         inputWritten += frameCount
 
+        guard ownsTracker else { return }
         tracker.push(buffer, frameCount: frameCount)
         samplesSinceAnalysis += frameCount
         while samplesSinceAnalysis >= analysisHop {

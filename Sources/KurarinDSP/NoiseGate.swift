@@ -14,6 +14,16 @@ public final class NoiseGate: AudioProcessor {
     public var holdMs: Float = 40
     public var enabled: Bool = true
 
+    /// Whether the chain's pitch tracker currently hears a voice.
+    ///
+    /// A held note fades as it is held, and a threshold that was right for the
+    /// start of "aaah" cuts off its end — the complaint everyone has about
+    /// noise gates. Periodicity says what level cannot: while the signal is
+    /// still a voice, an open gate stays open, however quiet it has become.
+    /// It does not force the gate open, so a false positive on noise costs
+    /// nothing.
+    public var isVoiced: Bool = false
+
     private let sampleRate: Float
     /// Readable inside the module because the output cannot show them: the gate
     /// only multiplies, and a gain stuck at the smallest denormal times any
@@ -54,7 +64,7 @@ public final class NoiseGate: AudioProcessor {
                 : envelope * envelopeDecay + magnitude * (1 - envelopeDecay)
 
             if isOpen {
-                if envelope < closeLevel {
+                if envelope < closeLevel && !isVoiced {
                     if holdCounter > 0 {
                         holdCounter -= 1
                     } else {
