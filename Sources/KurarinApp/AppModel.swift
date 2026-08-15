@@ -76,6 +76,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var outputLevel: Float = 0
 
     @Published var hotKeys: [HotKeyManager.Action: HotKey] = HotKeyManager.defaults
+    @Published private(set) var isRecordingHotKey = false
 
     let engine = KurarinEngine()
     private let store = PresetStore()
@@ -423,14 +424,50 @@ final class AppModel: ObservableObject {
 
     func registerHotKeys() {
         hotKeyManager.unregisterAll()
+        guard !isRecordingHotKey else { return }
+
+        var rejected: [String] = []
         for (action, hotKey) in hotKeys {
-            hotKeyManager.register(hotKey, for: action)
+            if !hotKeyManager.register(hotKey, for: action) {
+                rejected.append("\(hotKey.displayName) (\(action.displayName))")
+            }
         }
-        for index in 0..<SoundboardMixer.slotCount {
-            guard let action = HotKeyManager.Action(rawValue: "playSlot\(index)"),
-                  let hotKey = hotKeys[action] else { continue }
-            hotKeyManager.register(hotKey, for: action)
+        if !rejected.isEmpty {
+            // Carbon refuses a combination another application already holds,
+            // and it is the only way to find out.
+            statusMessage = "Already taken by another app: \(rejected.sorted().joined(separator: ", "))"
         }
+    }
+
+    /// Suspends the global shortcuts so the recorder can see the keys.
+    ///
+    /// A registered Carbon hot key is swallowed before it reaches the
+    /// application, so pressing the key being rebound would fire the action it
+    /// is already bound to instead of being recorded.
+    func beginRecordingHotKey() {
+        isRecordingHotKey = true
+        hotKeyManager.unregisterAll()
+    }
+
+    func endRecordingHotKey() {
+        isRecordingHotKey = false
+        registerHotKeys()
+    }
+
+    /// A combination belongs to one action, so assigning it takes it away from
+    /// whichever action held it before.
+    func assign(_ hotKey: HotKey, to action: HotKeyManager.Action) {
+        for (other, existing) in hotKeys where other != action && existing == hotKey {
+            hotKeys[other] = nil
+        }
+        hotKeys[action] = hotKey
+        saveSettings()
+    }
+
+    func clearHotKey(for action: HotKeyManager.Action) {
+        hotKeys[action] = nil
+        saveSettings()
+        registerHotKeys()
     }
 
     private func perform(_ action: HotKeyManager.Action) {

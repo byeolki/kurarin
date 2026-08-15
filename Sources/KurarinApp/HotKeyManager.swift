@@ -21,6 +21,10 @@ public struct HotKey: Codable, Equatable, Hashable, Sendable {
         return parts.joined()
     }
 
+    private static let functionKeyCodes: Set<UInt32> = [
+        122, 120, 99, 118, 96, 97, 98, 100, 101, 109, 103, 111,
+    ]
+
     private static func keyName(for keyCode: UInt32) -> String {
         let names: [UInt32: String] = [
             18: "1", 19: "2", 20: "3", 21: "4", 23: "5", 22: "6", 26: "7", 28: "8", 25: "9", 29: "0",
@@ -29,9 +33,33 @@ public struct HotKey: Codable, Equatable, Hashable, Sendable {
             0: "A", 11: "B", 8: "C", 2: "D", 14: "E", 3: "F", 5: "G", 4: "H",
             34: "I", 38: "J", 40: "K", 37: "L", 46: "M", 45: "N", 31: "O", 35: "P",
             12: "Q", 15: "R", 1: "S", 17: "T", 32: "U", 9: "V", 13: "W", 7: "X", 16: "Y", 6: "Z",
-            49: "Space", 53: "Esc",
+            49: "Space", 53: "Esc", 48: "Tab", 36: "Return", 51: "Delete", 117: "Fwd Delete",
+            123: "←", 124: "→", 125: "↓", 126: "↑",
+            27: "-", 24: "=", 33: "[", 30: "]", 41: ";", 39: "'",
+            43: ",", 47: ".", 44: "/", 42: "\\", 50: "`",
+            115: "Home", 119: "End", 116: "Page Up", 121: "Page Down",
         ]
         return names[keyCode] ?? "Key \(keyCode)"
+    }
+
+    /// Builds a hot key from a recorded key press.
+    ///
+    /// Returns nil for a bare character key: a global shortcut with no
+    /// modifiers swallows that key in every application, so typing the letter
+    /// anywhere on the system would stop working. Function keys are exempt —
+    /// they are the ones worth pressing mid-game, and nothing types with them.
+    init?(event: NSEvent) {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        var carbonModifiers: UInt32 = 0
+        if flags.contains(.control) { carbonModifiers |= UInt32(controlKey) }
+        if flags.contains(.option)  { carbonModifiers |= UInt32(optionKey) }
+        if flags.contains(.shift)   { carbonModifiers |= UInt32(shiftKey) }
+        if flags.contains(.command) { carbonModifiers |= UInt32(cmdKey) }
+
+        let keyCode = UInt32(event.keyCode)
+        guard carbonModifiers != 0 || HotKey.functionKeyCodes.contains(keyCode) else { return nil }
+
+        self.init(keyCode: keyCode, modifiers: carbonModifiers)
     }
 }
 
