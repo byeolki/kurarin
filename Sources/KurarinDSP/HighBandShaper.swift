@@ -30,6 +30,15 @@ public final class HighBandShaper: AudioProcessor {
 
     /// 0 leaves the original band alone, 1 replaces it entirely.
     public var mix: Float = 1
+    /// Whether the shifter is currently repeating glottal periods.
+    ///
+    /// Only voiced audio is repeated, and only repetition creates the buzz
+    /// this unit exists to prevent. A fricative goes through the shifter's
+    /// unvoiced path, which does not repeat anything, so rebuilding it as
+    /// synthetic noise replaces a real sound with an approximation of it for
+    /// no benefit — and an "s" is mostly this band, so the approximation is
+    /// what the listener hears.
+    public var isVoiced: Bool = false
     public var formantRatio: Float = 1 {
         didSet {
             if abs(formantRatio - configuredRatio) > 0.01 { configureSynthesis() }
@@ -55,10 +64,26 @@ public final class HighBandShaper: AudioProcessor {
     /// the voice — measured at fifty decibels above the input below two hundred
     /// hertz, rising and falling with every sibilant.
     private let noiseHighPass: [Biquad]
+    /// The same treatment for the signal being measured.
+    ///
+    /// The chain hands over `original - lowpass(split)`, which is not the same
+    /// as "everything above the split": a crossover has a slope, so a loud
+    /// vowel leaves a residue below it that is small in absolute terms and
+    /// enormous compared to the air up here. The telescoping split has no lower
+    /// bound of its own, so that residue lands in the first sub-band, and its
+    /// level — which follows the vowel — comes back out as noise. That is the
+    /// hiss that grows with the voice.
+    ///
+    /// Applied to the copy being analysed, never to the signal being passed
+    /// through: with the rebuild mixed out this unit is a plain delay, and it
+    /// has to stay one.
+    private let analysisHighPass: [Biquad]
+    private var analysisScratch: [Float]
     private var configuredRatio: Float = 1
 
     private var delayLine: [Float]
     private var delayIndex = 0
+    private var voicedBlend: Float = 0
 
     private var analysisEnvelopes: [Float]
     private var synthesisEnvelopes: [Float]
@@ -88,6 +113,12 @@ public final class HighBandShaper: AudioProcessor {
             (0..<2).map { _ in Biquad(sampleRate: sampleRate) }
         }
         noiseHighPass = (0..<2).map { _ in Biquad(sampleRate: sampleRate) }
+        analysisHighPass = (0..<2).map { _ in
+            let filter = Biquad(sampleRate: sampleRate)
+            filter.configure(kind: .highpass, frequency: HighBandShaper.splitHz, q: 0.707)
+            return filter
+        }
+        analysisScratch = [Float](repeating: 0, count: HighBandShaper.chunk)
 
         analysisEnvelopes = [Float](repeating: 0, count: bandCount)
         synthesisEnvelopes = [Float](repeating: 0, count: bandCount)
@@ -126,8 +157,10 @@ public final class HighBandShaper: AudioProcessor {
         analysisFilters.forEach { $0.forEach { $0.reset() } }
         synthesisFilters.forEach { $0.forEach { $0.reset() } }
         noiseHighPass.forEach { $0.reset() }
+        analysisHighPass.forEach { $0.reset() }
         for i in delayLine.indices { delayLine[i] = 0 }
         delayIndex = 0
+        voicedBlend = 0
         for i in analysisEnvelopes.indices {
             analysisEnvelopes[i] = 0
             synthesisEnvelopes[i] = 0
@@ -152,7 +185,12 @@ public final class HighBandShaper: AudioProcessor {
             delayIndex = (delayIndex + 1) % delayLine.count
         }
 
-        let blend = min(max(mix, 0), 1)
+        // Crossfaded rather than switched: voicing is decided per block, and
+        // stepping between the real band and the rebuilt one at a block
+        // boundary is a click.
+        let target: Float = isVoiced ? 1 : 0
+        voicedBlend += (target - voicedBlend) * 0.25
+        let blend = min(max(mix, 0), 1) * voicedBlend
         // The envelopes and the filters are kept current even when the rebuilt
         // band is not being used, so that turning it up resumes from what the
         // voice is doing now rather than from wherever it was left.
@@ -172,7 +210,12 @@ public final class HighBandShaper: AudioProcessor {
 
     /// What the original band is doing, per sub-band.
     private func measureAnalysisEnvelopes(count: Int) {
-        splitAndTrack(source: .delayed, filters: analysisFilters, count: count, collect: false)
+        for i in 0..<count { analysisScratch[i] = delayed[i] }
+        analysisScratch.withUnsafeMutableBufferPointer { base in
+            guard let pointer = base.baseAddress else { return }
+            analysisHighPass.forEach { $0.process(pointer, frameCount: count) }
+        }
+        splitAndTrack(source: .analysis, filters: analysisFilters, count: count, collect: false)
     }
 
     /// Fresh noise, one block of it.
@@ -194,7 +237,7 @@ public final class HighBandShaper: AudioProcessor {
         splitAndTrack(source: .noise, filters: synthesisFilters, count: count, collect: true)
     }
 
-    private enum Source { case delayed, noise }
+    private enum Source { case analysis, noise }
 
     /// Splits a block into sub-bands with the telescoping lowpass trick and
     /// tracks each band's envelope; when collecting, the shaped band is added
@@ -208,13 +251,20 @@ public final class HighBandShaper: AudioProcessor {
     private func splitAndTrack(source: Source, filters: [[Biquad]], count: Int, collect: Bool) {
         for i in 0..<count { previousLow[i] = 0 }
 
-        let attack = expf(-1 / (0.004 * sampleRate))
-        let release = expf(-1 / (0.030 * sampleRate))
+        // Symmetric, and slow enough to average across a glottal period.
+        //
+        // Rising faster than it falls would repeat the crest-factor mistake one
+        // level up: a voiced band arrives in bursts, so the block-to-block mean
+        // square swings widely, and a follower that jumps to the loud blocks
+        // and eases off the quiet ones settles near the peak of that swing
+        // rather than its average. The rebuilt band then carries the energy of
+        // the loudest moment continuously.
+        let smoothing: Float = 0.12
 
         for index in 0...filters.count {
             if index < filters.count {
                 for i in 0..<count {
-                    currentLow[i] = source == .delayed ? delayed[i] : noise[i]
+                    currentLow[i] = source == .analysis ? analysisScratch[i] : noise[i]
                 }
                 currentLow.withUnsafeMutableBufferPointer { low in
                     guard let base = low.baseAddress else { return }
@@ -224,18 +274,30 @@ public final class HighBandShaper: AudioProcessor {
             } else {
                 // Everything above the last edge.
                 for i in 0..<count {
-                    let sample = source == .delayed ? delayed[i] : noise[i]
+                    let sample = source == .analysis ? analysisScratch[i] : noise[i]
                     bandBuffer[i] = sample - previousLow[i]
                 }
             }
 
-            var envelope = source == .delayed ? analysisEnvelopes[index] : synthesisEnvelopes[index]
-            for i in 0..<count {
-                let magnitude = abs(bandBuffer[i])
-                envelope += (magnitude - envelope) * (magnitude > envelope ? (1 - attack) : (1 - release))
-            }
+            // Root mean square, not a peak follower.
+            //
+            // The two signals being matched have completely different shapes.
+            // A voiced band is a train of pulses with a high crest factor;
+            // noise is not. Matching their peaks therefore matches the wrong
+            // thing and lets the noise carry several times the energy of what
+            // it replaced — measured at fourteen decibels of added hiss above
+            // five kilohertz during speech, which is exactly what it sounded
+            // like. Matching the mean square matches the loudness.
+            var sum: Float = 0
+            for i in 0..<count { sum += bandBuffer[i] * bandBuffer[i] }
+            let blockRMS = count > 0 ? sqrtf(sum / Float(count)) : 0
+
+            var envelope = source == .analysis ? analysisEnvelopes[index] : synthesisEnvelopes[index]
+            // Still smoothed across blocks, so a fricative starting mid-block
+            // does not step the level.
+            envelope += (blockRMS - envelope) * smoothing
             envelope = withoutDenormals(envelope)
-            if source == .delayed {
+            if source == .analysis {
                 analysisEnvelopes[index] = envelope
             } else {
                 synthesisEnvelopes[index] = envelope

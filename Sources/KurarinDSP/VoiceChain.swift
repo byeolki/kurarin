@@ -250,6 +250,7 @@ public final class VoiceChain {
         gate.isVoiced = voiced
         breath.isVoiced = voiced
         denoiser.isVoiced = voiced
+        highShaper.isVoiced = voiced
         updatePitchRatioForTarget(voiced: voiced, frameCount: frameCount)
 
         // Clicks first: a key press is loud enough to hold a gate open, and

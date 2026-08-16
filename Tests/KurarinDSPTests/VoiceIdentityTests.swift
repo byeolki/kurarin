@@ -92,21 +92,34 @@ final class VoiceIdentityTests: XCTestCase {
         parameters.gateEnabled = false
         parameters.pitchRatio = 1
         parameters.formantRatio = 1
+        parameters.highBandResynthesis = 0
 
         let voice = speaker(f0: 130, frames: 96000)
         let dry = run(chain({ var p = parameters; p.breathiness = 0; return p }()), voice)
         let breathy = run(chain(parameters), voice)
 
-        // The energy is added above the harmonics rather than under them.
-        let highPass = Biquad(sampleRate: Signal.sampleRate)
-        highPass.configure(kind: .highpass, frequency: 3000, q: 0.707)
-        let dryHigh = Signal.rms(highPass.process(Array(dry[48000...])))
+        // Measured in the band the breath actually occupies. It stops below the
+        // split, where the high band shaper takes over — two units adding noise
+        // to the same octave is how a voice ends up sounding like a hiss with
+        // words in it.
+        func inBreathBand(_ samples: [Float]) -> Float {
+            let highPass = Biquad(sampleRate: Signal.sampleRate)
+            highPass.configure(kind: .highpass, frequency: 2200, q: 0.707)
+            let lowPass = Biquad(sampleRate: Signal.sampleRate)
+            lowPass.configure(kind: .lowpass, frequency: 4800, q: 0.707)
+            return Signal.rms(lowPass.process(highPass.process(samples)))
+        }
 
-        let secondFilter = Biquad(sampleRate: Signal.sampleRate)
-        secondFilter.configure(kind: .highpass, frequency: 3000, q: 0.707)
-        let breathyHigh = Signal.rms(secondFilter.process(Array(breathy[48000...])))
+        let dryBand = inBreathBand(Array(dry[48000...]))
+        let breathyBand = inBreathBand(Array(breathy[48000...]))
 
-        XCTAssertGreaterThan(breathyHigh, dryHigh * 2, "no breath was added")
+        XCTAssertGreaterThan(breathyBand, dryBand * 1.15, "no breath was added")
+        // And it is breath, not a layer of hiss on top of the voice.
+        XCTAssertLessThan(
+            breathyBand - dryBand,
+            Signal.rms(Array(dry[48000...])) * 0.1,
+            "the breath is louder than breath"
+        )
     }
 
     func testBreathIsSilentWithoutAVoice() {

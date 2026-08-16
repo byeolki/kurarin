@@ -41,7 +41,10 @@ public final class BreathGenerator: AudioProcessor {
         // The band where breath lives. Below this it muddies the vowel; above
         // it, it is just hiss.
         highPass.configure(kind: .highpass, frequency: 2200, q: 0.707)
-        lowPass.configure(kind: .lowpass, frequency: 7500, q: 0.707)
+        // Stops below the split, where the high band shaper takes over. Two
+        // units adding noise to the same octave is how a voice ends up sounding
+        // like a hiss with words in it.
+        lowPass.configure(kind: .lowpass, frequency: 4800, q: 0.707)
     }
 
     public func reset() {
@@ -99,7 +102,11 @@ public final class BreathGenerator: AudioProcessor {
 
                 random = random &* 6364136223846793005 &+ 1442695040888963407
                 let white = Float(Int32(truncatingIfNeeded: random >> 32)) / Float(Int32.max)
-                base[i] = white * envelope * voicedBlend * amount * 0.9
+                // Aspiration in a real voice sits around thirty decibels below
+                // the vowel it accompanies. At nine tenths of the envelope this
+                // was landing eleven decibels below it — not breath, a hiss
+                // with a voice behind it.
+                base[i] = white * envelope * voicedBlend * amount * 0.09
             }
         }
     }

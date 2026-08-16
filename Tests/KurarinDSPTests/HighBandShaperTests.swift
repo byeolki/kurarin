@@ -2,10 +2,20 @@ import XCTest
 @testable import KurarinDSP
 
 final class HighBandShaperTests: XCTestCase {
-    private func shaper(mix: Float, formant: Float = 1, delay: Int = 1920) -> HighBandShaper {
+    /// Voiced by default: rebuilding only happens while the shifter is
+    /// repeating glottal periods, and that is what these tests are about. The
+    /// unvoiced case — where the band must pass through untouched — is covered
+    /// in `AddedNoiseTests`.
+    private func shaper(
+        mix: Float,
+        formant: Float = 1,
+        delay: Int = 1920,
+        voiced: Bool = true
+    ) -> HighBandShaper {
         let unit = HighBandShaper(sampleRate: Signal.sampleRate, delayFrames: delay)
         unit.mix = mix
         unit.formantRatio = formant
+        unit.isVoiced = voiced
         return unit
     }
 
