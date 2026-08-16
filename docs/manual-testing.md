@@ -1,142 +1,134 @@
-# Manual test checklist
+# 수동 테스트 체크리스트
 
-Routing, the driver and anything involving another application need real
-hardware and a person. Everything below is what `make test` cannot tell you.
+라우팅, 드라이버, 다른 앱이 얽히는 부분은 실제 하드웨어와 사람이 있어야 확인된다.
+아래는 전부 `make test`가 알려줄 수 없는 것들이다.
 
-Run this after installing the driver on a clean machine, and again before
-tagging a release. Note the macOS version you ran it on.
+드라이버를 새로 설치한 뒤 한 번, 그리고 릴리스 태그를 붙이기 전에 한 번 돌린다.
+확인한 macOS 버전을 같이 적어둘 것.
 
-## 0. Driver loads
+## 0. 드라이버가 로드되는가
 
-The largest unverified risk in the project: an unsigned HAL plug-in has to be
-accepted by `coreaudiod`.
+이 프로젝트에서 가장 오래 미검증으로 남아 있던 항목. 서명되지 않은 HAL 플러그인을
+`coreaudiod`가 받아줘야 한다.
 
-- [ ] `make driver` succeeds and produces `build/Kurarin.driver`
-- [ ] `sudo ./scripts/install-driver.sh` reports **Kurarin Microphone is present**
-- [ ] `Kurarin Microphone` appears in System Settings ▸ Sound ▸ Input
-- [ ] It also appears in Audio MIDI Setup as a 2-in / 2-out device
-- [ ] With the app **not** running, recording from it produces silence, not noise
-- [ ] `log show --last 2m --predicate 'process == "coreaudiod"' | grep -i kurarin`
-      shows no errors
-- [ ] `sudo ./scripts/uninstall-driver.sh` removes it cleanly, then reinstall
+- [ ] `make driver`가 성공하고 `build/Kurarin.driver`가 만들어진다
+- [ ] `sudo ./scripts/install-driver.sh`가 **Kurarin Microphone is present**를 출력한다
+- [ ] 시스템 설정 ▸ 사운드 ▸ 입력에 **Kurarin Microphone**이 보인다
+- [ ] Audio MIDI 설정에도 2-in / 2-out 장치로 보인다
+- [ ] 앱을 **끈 상태**에서 이 장치로 녹음하면 잡음이 아니라 무음이 녹음된다
+- [ ] `log show --last 2m --predicate 'process == "coreaudiod"' | grep -i kurarin`에
+      오류가 없다
+- [ ] `sudo ./scripts/uninstall-driver.sh`로 깨끗이 지워지고, 다시 설치해도 된다
 
-## 1. Sound gets through
+> 장치가 안 뜨는데 로그에 kurarin 언급이 **아예 없다면** 심사 후 거부가 아니라
+> 스캔조차 안 된 것이다. 격리 속성부터 의심할 것: `xattr /Library/Audio/Plug-Ins/HAL/Kurarin.driver`
 
-- [ ] Launch the app; the menu bar icon appears
-- [ ] Devices tab lists the real microphones, and does **not** offer
-      Kurarin Microphone as an input
-- [ ] Press Start. macOS asks for microphone permission the first time
-- [ ] The **In** meter moves when you speak
-- [ ] QuickTime ▸ New Audio Recording ▸ Kurarin Microphone records your voice
-- [ ] Discord ▸ Voice settings ▸ Kurarin Microphone: the input bar moves, and a
-      friend or a second account hears you
-- [ ] Roblox with *Make Kurarin the system default microphone* on: voice chat
-      picks it up
-- [ ] Stop. The system default input returns to what it was before
+## 1. 소리가 통과하는가
 
-## 2. Voice
+- [ ] 앱을 실행하면 메뉴바에 아이콘이 뜬다
+- [ ] Devices 탭에 실제 마이크들이 보이고, **Kurarin Microphone은 입력 후보로 안 나온다**
+- [ ] Start를 누르면 처음 한 번 마이크 권한을 묻는다
+- [ ] 말할 때 **In** 미터가 움직인다
+- [ ] "Set from my voice"로 게인을 맞추면 평소 말투에서 −12 dB 근처(초록 구간)에 들어온다
+- [ ] QuickTime ▸ 새로운 오디오 녹음 ▸ Kurarin Microphone으로 내 목소리가 녹음된다
+- [ ] Discord ▸ 음성 설정 ▸ Kurarin Microphone: 입력 막대가 움직이고 상대가 듣는다
+- [ ] *Kurarin을 시스템 기본 마이크로* 옵션을 켠 상태에서 Roblox 음성 채팅이 잡는다
+- [ ] Stop을 누르면 시스템 기본 입력이 원래 장치로 돌아온다
 
-- [ ] Effect off sounds like the plain microphone
-- [ ] Child, Deep Male, Female, Robot, Radio, Monster, Underwater each sound
-      distinct and none of them clip or crackle
-- [ ] Pitch alone changes how high the voice sits without changing the
-      apparent size of the speaker
-- [ ] Formant alone changes the apparent size without changing the note
-- [ ] Dragging pitch and formant while speaking produces no clicks
-- [ ] Moving an equaliser band changes the tone, and the frequency slider spends
-      a sensible amount of its travel below 1 kHz
-- [ ] Flatten zeroes every band
-- [ ] Fricatives ("s", "sh", "f") stay crisp rather than buzzing
-- [ ] Switching the latency mode restarts the engine and audio returns
-- [ ] Editing a built-in preset and saving creates a copy; the built-in is intact
-- [ ] Saved presets survive a relaunch
+## 2. 변조
 
-## 2b. What only ears can judge
+- [ ] 이펙트를 끄면 맨 마이크 소리와 같다
+- [ ] Child, Deep Male, Female, Robot, Radio, Monster, Underwater가 서로 구별되고
+      어느 것도 클리핑하거나 지직거리지 않는다
+- [ ] Pitch만 움직이면 화자의 덩치는 그대로인 채 음높이만 변한다
+- [ ] Formant만 움직이면 음높이는 그대로인 채 덩치만 변한다
+- [ ] 말하는 중에 Pitch/Formant를 드래그해도 딸깍 소리가 없다
+- [ ] EQ 밴드를 움직이면 음색이 변하고, 주파수 슬라이더가 1 kHz 아래에도 충분한
+      이동 범위를 쓴다
+- [ ] Flatten이 모든 밴드를 0으로 만든다
+- [ ] 마찰음("ㅅ", "ㅆ", "ㅎ")이 버즈 없이 선명하다
+- [ ] 지연 모드를 바꾸면 엔진이 재시작되고 소리가 돌아온다
+- [ ] 내장 프리셋을 편집해 저장하면 사본이 생기고 원본은 그대로다
+- [ ] 저장한 프리셋이 앱을 껐다 켜도 남아 있다
 
-Everything in this section has automated coverage for the property it is
-supposed to have — the pitch lands on the target, the breath is aperiodic, the
-noise floor comes down — and none for whether it sounds like a person. Run
-these together, in one sitting, with headphones and monitoring on.
+## 2b. 귀로만 판단할 수 있는 것
 
-**Cleaning**
+이 절의 항목들은 **"그 성질이 있는지"는 자동 테스트가 이미 보장한다** — 피치가 목표에
+착지하는지, 숨소리가 비주기적인지, 잡음 바닥이 내려가는지. 자동 테스트가 못 보는 건
+**"사람처럼 들리는지"** 하나뿐이고, 그래서 이 목록이 따로 있다.
 
-- [ ] Type while speaking: the keys go, the words do not
-- [ ] Click the mouse mid-sentence: the click goes
-- [ ] Knock the desk: the thump goes, and nothing ducks for long afterwards
-- [ ] Say "ㅌ, ㅋ, ㅍ" repeatedly at "Click and key noise" 1.0. If the consonants
-      soften, that is the trade this control makes — back it off to 0.4
-- [ ] Turn on a fan and start the engine while quiet: the hiss falls away after
-      about a second
-- [ ] Then speak: the voice arrives at full level, not fading in
-- [ ] Hold "아————" for ten seconds with "Background noise" at 1.0. It must not
-      fade out partway through. This is the failure every other suppressor has
-- [ ] Start the engine *while already speaking*: nothing should be reduced until
-      the first pause
+헤드폰을 쓰고, 모니터링("Hear my own transformed voice")을 켜고, 한 번에 몰아서 한다.
 
-**Voice**
+### 청소 계열
 
-- [ ] Female: does it sound like a woman, or like you moved up? If the second,
-      say which — the pitch, the size, or the texture
-- [ ] Child, Deep Male, Monster, same question
-- [ ] "Rebuild the air" at 0 and at 1, on the Female preset, saying "s" and
-      "sh" a few times. At 0 the hiss should buzz on the new note; at 1 it
-      should sound like hiss
-- [ ] "Vocal tract correction" at 0 and at 1: which vowel sounds more like a
-      real speaker
-- [ ] "Breath" from 0 to 1 while speaking: it should sound like breath, not
-      like hiss added on top
-- [ ] "Aim for a pitch" on, at 200 Hz: speak for ten seconds and check the pitch
-      settles where it should, and that a question still rises at the end
-- [ ] Whisper. Then speak very quietly. Then shout
-- [ ] All of the above with monitoring on, listening for anything that stutters
-      at the start or end of a word
+- [ ] 타이핑하면서 말하기 — 타건음은 사라지고 말은 남는가
+- [ ] 문장 중간에 마우스 클릭 — 클릭이 사라지는가
+- [ ] 책상을 쿵 치기 — 소리가 사라지고, 그 뒤로 목소리가 오래 눌리지 않는가
+- [ ] "타, 카, 파"를 반복 (Click and key noise = 1.0). 자음이 물러지면 그건 이 컨트롤이
+      감수하는 대가다. 0.4 정도로 낮춰서 다시 확인
+- [ ] 선풍기를 켜고 **조용한 상태에서** Start → 1초쯤 뒤 히스가 걷히는가
+- [ ] 그다음 말하기 — 목소리가 페이드인되지 않고 처음부터 제 크기로 나오는가
+- [ ] **"아————"를 10초간 유지** (Background noise = 1.0). 중간에 소리가 사그라들면 안 된다.
+      다른 노이즈 서프레서들이 실패하는 바로 그 지점
+- [ ] **이미 말하고 있는 상태에서** Start — 첫 침묵이 올 때까지는 아무것도 줄이지 않아야 한다
 
-## 3. Soundboard
+### 목소리 계열
 
-- [ ] Dropping a file onto a tile assigns it; **Choose…** does the same
-- [ ] Play is heard by the far end and in your own monitoring
-- [ ] Volume changes are audible while a looping sample plays
-- [ ] Loop repeats seamlessly; Stop ends it
-- [ ] Triggering the same slot repeatedly restarts it instead of piling up
-- [ ] Several slots at once do not clip (watch the **Out** meter)
-- [ ] A non-audio file, or a file longer than two minutes, is refused with a
-      message on the tile rather than a crash
-- [ ] Assigned slots survive a relaunch
+- [ ] **Female이 여자로 들리는가**, 아니면 그냥 내 목소리를 올린 것으로 들리는가.
+      후자라면 무엇이 부족한지 — **음높이인지, 덩치인지, 질감인지**
+- [ ] Child, Deep Male, Monster도 같은 질문
+- [ ] Female 프리셋에서 **"Rebuild the air" 0 ↔ 1**을 오가며 "스", "슈"를 여러 번.
+      0에서는 바람 소리가 새 음높이로 **웅웅거려야** 정상이고, 1에서는 그냥 바람 소리여야 한다
+- [ ] **"Vocal tract correction" 0 ↔ 1** — 어느 쪽 모음이 더 실제 사람 같은가
+- [ ] **Breath 0 → 1**을 말하면서 — 숨소리로 들리는가, 위에 히스를 얹은 것으로 들리는가
+- [ ] **"Aim for a pitch"** 켜고 200 Hz로 10초 말하기 — 음높이가 그 근처에 자리 잡는가,
+      그리고 **질문할 때 끝이 올라가는 억양이 살아 있는가**
+- [ ] 속삭이기 → 아주 작게 말하기 → 고함치기
+- [ ] 위 전부를 모니터링을 켠 채로 하면서, 단어의 시작이나 끝에서 끊기거나 더듬는 느낌이
+      없는지
 
-## 4. System audio
+## 3. 사운드보드
 
-- [ ] Turning capture on prompts for audio recording permission
-- [ ] **Everything**: music playing on the machine reaches the far end
-- [ ] The music still plays normally in your own headphones, and the volume keys
-      still work
-- [ ] You do **not** hear an echo of yourself or a feedback howl
-- [ ] **Chosen apps**: the list shows playing apps with names and icons, and
-      Kurarin is not in it
-- [ ] Only the ticked apps are shared
-- [ ] Shared sound level changes what the far end hears
-- [ ] Refusing the permission leaves the voice and soundboard working
+- [ ] 타일에 파일을 끌어다 놓으면 등록된다. **Choose…** 버튼도 동일하게 동작한다
+- [ ] Play가 상대에게도 들리고 내 모니터링에도 들린다
+- [ ] 반복 재생 중에 볼륨을 바꾸면 즉시 반영된다
+- [ ] Loop가 끊김 없이 반복되고 Stop으로 멈춘다
+- [ ] 같은 슬롯을 연타하면 겹쳐 쌓이지 않고 처음부터 다시 재생된다
+- [ ] 여러 슬롯을 동시에 재생해도 클리핑되지 않는다 (**Out** 미터로 확인)
+- [ ] 오디오가 아닌 파일이나 2분이 넘는 파일은 크래시 없이 타일에 오류로 표시된다
+- [ ] 등록한 슬롯이 앱을 껐다 켜도 남아 있다
 
-## 5. Shortcuts
+## 4. 시스템 오디오 공유
 
-- [ ] Defaults work while another app is focused: F1 mute, F2 effect,
-      F3/F4 preset, F5 stop sounds
-- [ ] Clicking a binding and pressing a combination records it
-- [ ] A bare letter key is refused; a letter with a modifier is accepted
-- [ ] Escape cancels recording and leaves the old binding
-- [ ] Assigning a combination that another action holds moves it
-- [ ] A combination another application already owns reports that it is taken
-- [ ] Bindings survive a relaunch
+- [ ] 캡처를 켜면 오디오 녹음 권한을 묻는다
+- [ ] **Everything**: 컴퓨터에서 재생 중인 음악이 상대에게 들린다
+- [ ] 그 음악이 내 헤드폰에서도 평소대로 들리고, 볼륨 키도 그대로 동작한다
+- [ ] 내 목소리가 메아리치거나 하울링하지 **않는다**
+- [ ] **Chosen apps**: 재생 중인 앱들이 이름과 아이콘으로 나오고, 그 목록에 Kurarin은 없다
+- [ ] 체크한 앱의 소리만 공유된다
+- [ ] Shared sound level을 바꾸면 상대가 듣는 크기가 변한다
+- [ ] 권한을 거부해도 변조와 사운드보드는 정상 동작한다
 
-## 6. Living with it
+## 5. 단축키
 
-- [ ] Unplug the microphone mid-session: the engine restarts on the default and
-      says so
-- [ ] Unplug the headphones mid-session: the same
-- [ ] Change the system output while running
-- [ ] Sleep and wake the machine; audio recovers
-- [ ] 30 minutes of continuous use: no drift, no ticking, no dropouts, no
-      creeping delay
-- [ ] CPU use stays reasonable (a single core's fraction, not a whole core)
-- [ ] Quit from the menu bar, from ⌘Q and from Force Quit: in every case the
-      system default microphone ends up back where it started — for Force Quit,
-      at the next launch
+- [ ] 다른 앱에 포커스가 있어도 기본값이 동작한다: F1 뮤트, F2 이펙트,
+      F3/F4 프리셋 이전·다음, F5 소리 전부 정지
+- [ ] 바인딩을 클릭하고 조합을 누르면 등록된다
+- [ ] 맨 글자키는 거부되고, 수정키를 함께 누르면 등록된다
+- [ ] Esc를 누르면 취소되고 기존 바인딩이 남는다
+- [ ] 다른 동작이 쓰던 조합을 등록하면 그쪽에서 떼어 온다
+- [ ] 다른 앱이 이미 점유한 조합은 "이미 사용 중"이라고 알려준다
+- [ ] 바인딩이 앱을 껐다 켜도 남아 있다
+- [ ] 키를 **누르고 있어도** 한 번만 발동한다 (뮤트가 깜빡이면 안 된다)
+
+## 6. 계속 켜두고 쓰기
+
+- [ ] 사용 중에 마이크를 뽑으면 기본 장치로 재시작하고 그 사실을 알려준다
+- [ ] 헤드폰을 뽑아도 마찬가지
+- [ ] 마이크와 헤드폰이 **같은 장치**(USB 헤드셋)일 때도 모니터링이 들린다
+- [ ] 실행 중에 시스템 출력 장치를 바꿔본다
+- [ ] 맥을 잠자기 → 깨우기 하면 오디오가 복구된다
+- [ ] 30분 연속 사용: 드리프트로 인한 끊김, 틱 소리, 지연이 점점 늘어나는 현상이 없다
+- [ ] CPU 사용량이 과하지 않다 (코어 하나를 다 먹지 않는다)
+- [ ] 메뉴바 Quit / ⌘Q / 강제 종료 — 어느 쪽이든 시스템 기본 마이크가 원래대로 돌아온다
+      (강제 종료의 경우 다음 실행 시점에)

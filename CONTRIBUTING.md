@@ -53,7 +53,7 @@ forced it, or the failure it prevents.
 - One concern per pull request.
 - `make test` passes, and `make` builds both products.
 - If the change touches routing, the driver or anything involving another
-  application, say which items of [docs/manual-testing.md](docs/manual-testing.md)
+  application, say which items of [docs/manual-testing.md](docs/manual-testing.md) (Korean)
   you ran and on which macOS version. Those paths have no automated coverage.
 - Update [docs/architecture.md](docs/architecture.md) when the design changes,
   not only the code.

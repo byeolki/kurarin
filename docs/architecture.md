@@ -344,7 +344,7 @@ test`: synthetic signals in, measured pitch, level, finiteness and range out;
 serialization round-trips; decode results.
 
 `KurarinEngine` and the driver need real hardware and a person. See
-[manual-testing.md](manual-testing.md).
+[manual-testing.md](manual-testing.md) (Korean).
 
 ## Building
 

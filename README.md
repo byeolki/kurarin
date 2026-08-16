@@ -14,7 +14,7 @@ system audio ──────────────────────�
 ```
 
 > **Status:** feature complete, not yet verified end to end on a machine with
-> the driver installed. See [docs/manual-testing.md](docs/manual-testing.md) for
+> the driver installed. See [docs/manual-testing.md](docs/manual-testing.md) (Korean) for
 > the checklist that has to pass before this is called stable.
 
 ## What it does
@@ -145,7 +145,7 @@ make test
 The DSP is where automated tests are meaningful: synthetic signals go in,
 measured pitch, level and stability come out. Routing and the driver need
 hardware and a person, and are covered by
-[docs/manual-testing.md](docs/manual-testing.md) instead.
+[docs/manual-testing.md](docs/manual-testing.md) (Korean) instead.
 
 ## Contributing
 
