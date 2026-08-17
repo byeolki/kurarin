@@ -96,6 +96,12 @@ final class ParameterSlotTests: XCTestCase {
             )
         }
 
+        var checksum: Int {
+            withUnsafeBytes(of: values) { raw in
+                raw.bindMemory(to: Int.self).reduce(0, &+)
+            }
+        }
+
         var isConsistent: Bool {
             withUnsafeBytes(of: values) { raw in
                 let words = raw.bindMemory(to: Int.self)
@@ -104,25 +110,38 @@ final class ParameterSlotTests: XCTestCase {
         }
     }
 
-    /// The same property under a copy long enough for the flaw to be certain
-    /// rather than lucky: with the publish count unchecked this fails within a
-    /// few thousand reads, and with it checked it does not fail at all.
+    /// The same property under a copy wide enough to be caught mid-way.
+    ///
+    /// This is a race detector, and it is honest to say what that means: a tear
+    /// needs a preemption to land inside the reader's copy, so the test cannot
+    /// force one. Measured against a deliberately broken version — the count
+    /// check removed — it fails on most runs but not all. It is worth having
+    /// anyway, because a regression here is silent and this is the only thing
+    /// that would notice, but a green run is weaker evidence than usual.
     func testAWideValueIsNeverObservedHalfApplied() {
-        let slot = ParameterSlot(Wide(0))
-        let publishing = expectation(description: "publisher finished")
+        for attempt in 0..<6 {
+            let slot = ParameterSlot(Wide(0))
+            let publishing = expectation(description: "publisher \(attempt) finished")
 
-        DispatchQueue.global().async {
-            for value in 1...300_000 { slot.publish(Wide(value)) }
-            publishing.fulfill()
+            DispatchQueue.global(qos: .userInitiated).async {
+                for value in 1...400_000 { slot.publish(Wide(value)) }
+                publishing.fulfill()
+            }
+
+            var torn = 0
+            var sink = 0
+            for _ in 0..<400_000 {
+                let observed = slot.load()
+                if !observed.isConsistent { torn += 1 }
+                // Keeps the copy from being optimised into nothing, and holds
+                // the reader inside its window a little longer.
+                sink &+= observed.checksum
+            }
+
+            wait(for: [publishing], timeout: 60)
+            XCTAssertEqual(torn, 0, "a reader saw half of one set and half of another")
+            XCTAssertNotEqual(sink, .max)
         }
-
-        var torn = 0
-        for _ in 0..<300_000 where !slot.load().isConsistent {
-            torn += 1
-        }
-
-        wait(for: [publishing], timeout: 60)
-        XCTAssertEqual(torn, 0, "a reader saw half of one set and half of another")
     }
 
     func testLoadReturnsTheLastPublishedValue() {

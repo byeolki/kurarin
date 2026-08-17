@@ -38,7 +38,7 @@ final class Filterbank {
     let bandCount: Int
 
     private let capacity: Int
-    private var floorFrequency: Float
+    private let hasFloor: Bool
 
     /// Carries the audio. Two sections: one is too gentle a slope to keep a
     /// loud band out of a quiet neighbour.
@@ -75,10 +75,14 @@ final class Filterbank {
     /// - Parameters:
     ///   - edges: crossover frequencies, ascending.
     ///   - floor: frequency below which the input is not expected to have
-    ///     content, used when measuring the lowest band. Zero leaves it open.
+    ///     content, used when measuring and when rebuilding the lowest band.
+    ///     Zero leaves it open, and whether there is one is fixed here — the
+    ///     frequency can move later, but a bank without a floor cannot grow one,
+    ///     because that flag is read by the audio thread and nothing else in
+    ///     this class is written behind its back.
     init(sampleRate: Float, edges: [Float], floor: Float = 0, capacity: Int = 512) {
         self.capacity = capacity
-        floorFrequency = floor
+        hasFloor = floor > 0
         bandCount = edges.count + 1
 
         lowpasses = edges.map { frequency in
@@ -131,12 +135,22 @@ final class Filterbank {
             analysisHigh[index + 1].configure(kind: .highpass, frequency: frequency, q: 0.707)
         }
         if let floor, floor > 0 {
-            floorFrequency = floor
+            precondition(hasFloor, "a bank built without a floor cannot be given one later")
             analysisHigh[0].configure(kind: .highpass, frequency: floor, q: 0.707)
             reconstructionHigh.forEach {
                 $0.configure(kind: .highpass, frequency: floor, q: 0.707)
             }
         }
+    }
+
+    /// Forgets what each band was last scaled by, so the next chunk starts
+    /// from the gain it is given rather than ramping from a stale one.
+    ///
+    /// For a caller that stops running the bank for a while: the ramp exists to
+    /// avoid a step between one chunk and the next, and two chunks either side
+    /// of a pause are not next to each other.
+    func forgetGainRamp() {
+        for i in hasAppliedGain.indices { hasAppliedGain[i] = false }
     }
 
     func reset() {
@@ -198,7 +212,7 @@ final class Filterbank {
             buffer[i] = 0
         }
 
-        if floorFrequency > 0 {
+        if hasFloor {
             source.withUnsafeMutableBufferPointer { base in
                 guard let pointer = base.baseAddress else { return }
                 reconstructionHigh.forEach { $0.process(pointer, frameCount: count) }
@@ -251,7 +265,7 @@ final class Filterbank {
         var sum: Float = 0
         measured.withUnsafeMutableBufferPointer { samples in
             guard let base = samples.baseAddress else { return }
-            if index > 0 || (floorFrequency > 0 && !floorAlreadyApplied) {
+            if index > 0 || (hasFloor && !floorAlreadyApplied) {
                 analysisHigh[index].process(base, frameCount: count)
             }
             if index < analysisLow.count {

@@ -56,7 +56,12 @@ public final class ParameterSlot<Value: BitwiseCopyable>: @unchecked Sendable {
         for _ in 0..<8 {
             let before = kurarin_atomic_load_acquire(index)
             let value = storage[before % ParameterSlot.slotCount]
-            if kurarin_atomic_load_acquire(index) == before { return value }
+            // A fence, not another acquire load. Acquire stops later reads from
+            // moving earlier and says nothing about earlier reads moving later,
+            // so without this the copy above is free to drift past the check
+            // below and a torn read passes it.
+            kurarin_atomic_acquire_fence()
+            if kurarin_atomic_load_relaxed(index) == before { return value }
         }
         return storage[kurarin_atomic_load_acquire(index) % ParameterSlot.slotCount]
     }

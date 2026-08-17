@@ -152,13 +152,21 @@ public final class HighBandShaper: AudioProcessor {
         // stepping between the real band and the rebuilt one at a block
         // boundary is a click.
         let target: Float = isVoiced ? 1 : 0
-        voicedBlend += (target - voicedBlend) * 0.25
+        // In seconds, like everything else here: a fixed step per callback is
+        // a twenty millisecond crossfade at a sixty-four frame buffer and a
+        // hundred and eighty at five hundred and twelve.
+        voicedBlend += (target - voicedBlend) * (1 - expf(-(Float(count) / sampleRate) / 0.020))
         let blend = min(max(mix, 0), 1) * voicedBlend
         // The envelopes and the filters are kept current even when the rebuilt
         // band is not being used, so that turning it up resumes from what the
         // voice is doing now rather than from wherever it was left.
         measureAnalysisEnvelopes(count: count)
         guard blend > 0.001 else {
+            // The synthesis bank is not running, so its gain ramp is about to
+            // be stale: without this the first chunk of the next word ramps
+            // down from whatever the last one ended on, which is a burst of
+            // noise exactly where a word starts.
+            synthesisBank.forgetGainRamp()
             for i in 0..<count { buffer[i] = delayed[i] }
             return
         }
