@@ -148,13 +148,15 @@ public final class HumRemover: AudioProcessor {
             bestFrequency = frequency
         }
 
-        // Eight times the level between the candidates. A room with no hum
+        // Eight times the level away from the candidates. A room with no hum
         // wanders around its noise floor and never clears this; a room with hum
         // clears it by a wide margin.
-        // Only when it changes. Depth is a blend against the dry signal, so
-        // strength does not touch the coefficients and moving that slider is no
-        // reason to recompute eight biquads inside the callback.
         let found = bestMagnitude > reference * 8 ? bestFrequency : 0
+
+        // Reconfigured only when the frequency changes. Depth is a blend
+        // against the dry signal, so strength never reaches the coefficients,
+        // and recomputing eight biquads inside the callback for a slider that
+        // cannot affect them is work for nothing.
         if found != detectedHz {
             detectedHz = found
             configure()

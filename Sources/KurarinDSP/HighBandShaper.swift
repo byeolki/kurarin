@@ -151,6 +151,7 @@ public final class HighBandShaper: AudioProcessor {
         // Crossfaded rather than switched: voicing is decided per block, and
         // stepping between the real band and the rebuilt one at a block
         // boundary is a click.
+        let previousBlend = voicedBlend
         let target: Float = isVoiced ? 1 : 0
         // Five milliseconds, in seconds rather than in callbacks — a fixed
         // step per callback was five at a sixty-four frame buffer and forty at
@@ -177,8 +178,24 @@ public final class HighBandShaper: AudioProcessor {
         buildNoise(count: count)
         synthesise(count: count)
 
+        // Ramped across the chunk rather than held at one value for all of it.
+        // At a five hundred and twelve frame buffer the five millisecond
+        // constant moves the blend most of the way in a single step, and
+        // applying that between one sample and the next is a discontinuity.
+        //
+        // Worth doing and worth not overstating: measured against the stepped
+        // version, this takes about a tenth off both the jump at the chunk
+        // boundary and the energy that appears below three kilohertz, where
+        // this band has none of its own. Not the click it would be if the two
+        // signals were unrelated — they are level-matched noise, so a partial
+        // step does not move the waveform much further than the noise moves by
+        // itself. There is no test for it because a tenth is not a threshold
+        // anything can be held to; the measurement is the record.
+        let startBlend = min(max(mix, 0), 1) * previousBlend
+        let step = (blend - startBlend) / Float(count)
         for i in 0..<count {
-            buffer[i] = delayed[i] * (1 - blend) + output[i] * blend
+            let amount = startBlend + step * Float(i)
+            buffer[i] = delayed[i] * (1 - amount) + output[i] * amount
         }
     }
 

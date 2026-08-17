@@ -141,9 +141,12 @@ extension HumRemoverTests {
         unit.strength = 0
         _ = processStreaming(unit, Signal.silence(frames: 4800))
 
-        // Back on, in a room that now has no hum in it at all.
+        // Back on, in a room that now has no hum in it at all. Just enough to
+        // complete one window and no more: a second one would be all noise and
+        // would clear the verdict by itself, which is how this test passed
+        // against the very code it was written to catch.
         unit.strength = 1
-        _ = processStreaming(unit, Signal.noise(frames: 60000, amplitude: 0.02))
+        _ = processStreaming(unit, Signal.noise(frames: 12000, amplitude: 0.02))
         XCTAssertEqual(unit.detectedHz, 0, "hum from before the pause was counted as hum now")
     }
 

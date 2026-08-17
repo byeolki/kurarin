@@ -105,9 +105,9 @@ final class Filterbank {
             return filter
         }
 
-        // Always allocated, whether or not a floor was asked for: a bank whose
-        // edges can move can have a floor added later, and a filter that does
-        // not exist cannot be configured.
+        // Allocated either way so that the frequency can move later, even
+        // though whether there is a floor at all cannot: `setEdges` refuses to
+        // add one, because that flag is read by the audio thread.
         reconstructionHigh = (0..<2).map { _ -> Biquad in
             let filter = Biquad(sampleRate: sampleRate)
             if floor > 0 { filter.configure(kind: .highpass, frequency: floor, q: 0.707) }
