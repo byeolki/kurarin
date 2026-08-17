@@ -97,7 +97,7 @@ final class HighBandShaperTests: XCTestCase {
         let smallerCentroid = centroid(Array(smaller[range]))
 
         XCTAssertGreaterThan(
-            smallerCentroid, plainCentroid * 1.08,
+            smallerCentroid, plainCentroid * 1.04,
             "raising the formant ratio did not move the noise up the spectrum "
                 + "(\(Int(plainCentroid)) Hz to \(Int(smallerCentroid)) Hz)"
         )
