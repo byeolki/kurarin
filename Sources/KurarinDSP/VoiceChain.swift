@@ -14,6 +14,7 @@ public final class VoiceChain {
     private let gate: NoiseGate
     private let suppressor: TransientSuppressor
     private let denoiser: NoiseReducer
+    private let humRemover: HumRemover
     private let highPass: Biquad
     private var shifter: VoiceShifter
     /// One analysis, shared. The gate uses it to know a held note is still a
@@ -55,6 +56,7 @@ public final class VoiceChain {
         gate = NoiseGate(sampleRate: sampleRate)
         suppressor = TransientSuppressor(sampleRate: sampleRate)
         denoiser = NoiseReducer(sampleRate: sampleRate)
+        humRemover = HumRemover(sampleRate: sampleRate)
         highPass = Biquad(sampleRate: sampleRate)
         shifter = VoiceShifter(sampleRate: sampleRate, latencyMode: latencyMode, tracker: tracker)
         splitFilters = (0..<2).map { _ in
@@ -110,6 +112,7 @@ public final class VoiceChain {
         gate.thresholdDB = clamped.gateThresholdDB
         suppressor.strength = clamped.clickSuppression
         denoiser.strength = clamped.noiseReduction
+        humRemover.strength = clamped.humRemoval
 
         if clamped.highPassHz != appliedHighPassHz {
             highPass.configure(kind: .highpass, frequency: clamped.highPassHz, q: 0.707)
@@ -201,6 +204,11 @@ public final class VoiceChain {
     private var voicedSeconds: Float = 0
     private var disagreeingFrames = 0
 
+    /// The mains frequency found in the room, or zero. Worth showing: a user
+    /// who can see that hum was found knows the control is doing something,
+    /// and one who can see that it was not knows to look elsewhere.
+    public var detectedHumHz: Float { humRemover.detectedHz }
+
     /// What the shifter is currently being asked to do, for the interface to
     /// show — with a target set it is not the number in the preset.
     public var effectivePitchRatio: Float { shifter.pitchRatio }
@@ -216,6 +224,7 @@ public final class VoiceChain {
         samplesSinceAnalysis = 0
         suppressor.reset()
         denoiser.reset()
+        humRemover.reset()
         splitFilters.forEach { $0.reset() }
         highShaper.reset()
         breath.reset()
@@ -257,6 +266,11 @@ public final class VoiceChain {
         // removing it before the gate decides anything keeps the two from
         // arguing.
         suppressor.process(buffer, frameCount: frameCount)
+        // Hum before the broadband reducer. It is a handful of tones rather
+        // than a floor, so the reducer cannot reach it without taking the voice
+        // in the same band along — and with the tones gone, what the reducer
+        // measures as the floor is the floor.
+        humRemover.process(buffer, frameCount: frameCount)
         // Steady noise next, before the gate: with the room tone already taken
         // out, the gate has a much clearer difference between speech and
         // silence to work with, and can sit at a gentler threshold.

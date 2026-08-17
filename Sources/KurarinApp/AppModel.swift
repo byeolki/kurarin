@@ -676,6 +676,20 @@ final class AppModel: ObservableObject {
         saveSettings()
     }
 
+    /// What the hum remover has found, in words.
+    ///
+    /// A control that does nothing in a quiet room needs to say so, or it reads
+    /// as broken to anyone who turns it up and hears no difference.
+    var humDescription: String {
+        guard isRunning else {
+            return "Notches out electrical buzz from a charger, a cable or an interface. Nothing is removed unless hum is actually found."
+        }
+        let found = engine.chain.detectedHumHz
+        return found > 0
+            ? String(format: "Found %.0f Hz hum and its harmonics.", found)
+            : "No hum found — nothing is being removed."
+    }
+
     /// The shortcut printed on a soundboard tile, if the slot has one.
     func shortcutName(forSlot index: Int) -> String? {
         guard let action = HotKeyManager.Action(rawValue: "playSlot\(index)") else { return nil }

@@ -14,8 +14,12 @@ public struct VoiceParameters: Codable, Equatable, Sendable {
     /// How hard to duck mouse clicks, key presses and knocks. 0 is off.
     public var clickSuppression: Float
 
-    /// How much steady background noise — fans, hum, hiss — to remove. 0 is off.
+    /// How much steady background noise — fans, hiss — to remove. 0 is off.
     public var noiseReduction: Float
+
+    /// How much mains hum to notch out, if any is found. 0 is off. Does nothing
+    /// in a room that has none: the frequency is detected rather than assumed.
+    public var humRemoval: Float
 
     public var highPassHz: Float
 
@@ -66,6 +70,7 @@ public struct VoiceParameters: Codable, Equatable, Sendable {
         gateThresholdDB: Float = -45,
         clickSuppression: Float = 0.6,
         noiseReduction: Float = 0.5,
+        humRemoval: Float = 0.8,
         highPassHz: Float = 80,
         pitchRatio: Float = 1,
         formantRatio: Float = 1,
@@ -88,6 +93,7 @@ public struct VoiceParameters: Codable, Equatable, Sendable {
         self.gateThresholdDB = gateThresholdDB
         self.clickSuppression = clickSuppression
         self.noiseReduction = noiseReduction
+        self.humRemoval = humRemoval
         self.highPassHz = highPassHz
         self.pitchRatio = pitchRatio
         self.formantRatio = formantRatio
@@ -121,6 +127,7 @@ public struct VoiceParameters: Codable, Equatable, Sendable {
         gateThresholdDB   = value(.gateThresholdDB, defaults.gateThresholdDB)
         clickSuppression  = value(.clickSuppression, defaults.clickSuppression)
         noiseReduction    = value(.noiseReduction, defaults.noiseReduction)
+        humRemoval        = value(.humRemoval, defaults.humRemoval)
         highPassHz        = value(.highPassHz, defaults.highPassHz)
         pitchRatio        = value(.pitchRatio, defaults.pitchRatio)
         formantRatio      = value(.formantRatio, defaults.formantRatio)
@@ -150,6 +157,7 @@ public struct VoiceParameters: Codable, Equatable, Sendable {
         result.gateThresholdDB = min(max(gateThresholdDB, -80), 0)
         result.clickSuppression = min(max(clickSuppression, 0), 1)
         result.noiseReduction = min(max(noiseReduction, 0), 1)
+        result.humRemoval = min(max(humRemoval, 0), 1)
         result.highPassHz = min(max(highPassHz, 20), 500)
         result.pitchRatio = min(max(pitchRatio, 0.5), 2)
         result.formantRatio = min(max(formantRatio, 0.5), 2)

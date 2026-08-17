@@ -444,6 +444,15 @@ struct VoiceTab: View {
 
                 Section("Cleanup") {
                     VStack(alignment: .leading, spacing: 2) {
+                        Slider(value: $model.editedParameters.humRemoval, in: 0...1) {
+                            Text("Mains hum")
+                        }
+                        Text(model.humDescription)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    VStack(alignment: .leading, spacing: 2) {
                         Slider(value: $model.editedParameters.noiseReduction, in: 0...1) {
                             Text("Background noise")
                         }

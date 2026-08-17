@@ -11,6 +11,12 @@ public final class Biquad: AudioProcessor {
         case lowpass
         case highpass
         case peaking
+        /// Removes one frequency and leaves its neighbours alone. Unlike a
+        /// peaking filter with a large negative gain, whose skirts widen as the
+        /// cut deepens, a notch keeps the width its quality factor asks for —
+        /// so depth has to come from blending it with the dry signal rather
+        /// than from the filter.
+        case notch
         case lowShelf
         case highShelf
     }
@@ -66,6 +72,14 @@ public final class Biquad: AudioProcessor {
             nb0 = (1 + cosOmega) / 2
             nb1 = -(1 + cosOmega)
             nb2 = (1 + cosOmega) / 2
+            na0 = 1 + alpha
+            na1 = -2 * cosOmega
+            na2 = 1 - alpha
+
+        case .notch:
+            nb0 = 1
+            nb1 = -2 * cosOmega
+            nb2 = 1
             na0 = 1 + alpha
             na1 = -2 * cosOmega
             na2 = 1 - alpha
