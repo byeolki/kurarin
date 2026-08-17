@@ -66,6 +66,65 @@ final class ParameterSlotTests: XCTestCase {
         var second: Int
     }
 
+    /// Wide on purpose. A tear is a preemption landing inside the reader's
+    /// copy, so how likely it is depends on how long that copy takes — with two
+    /// words it happens perhaps once in a million reads, which is often enough
+    /// to matter on an audio thread and far too rare for a test to rely on.
+    /// Sixty-four words make the same flaw show up in the first few thousand.
+    private struct Wide: BitwiseCopyable {
+        var values: (
+            Int, Int, Int, Int, Int, Int, Int, Int,
+            Int, Int, Int, Int, Int, Int, Int, Int,
+            Int, Int, Int, Int, Int, Int, Int, Int,
+            Int, Int, Int, Int, Int, Int, Int, Int,
+            Int, Int, Int, Int, Int, Int, Int, Int,
+            Int, Int, Int, Int, Int, Int, Int, Int,
+            Int, Int, Int, Int, Int, Int, Int, Int,
+            Int, Int, Int, Int, Int, Int, Int, Int
+        )
+
+        init(_ value: Int) {
+            values = (
+                value, value, value, value, value, value, value, value,
+                value, value, value, value, value, value, value, value,
+                value, value, value, value, value, value, value, value,
+                value, value, value, value, value, value, value, value,
+                value, value, value, value, value, value, value, value,
+                value, value, value, value, value, value, value, value,
+                value, value, value, value, value, value, value, value,
+                value, value, value, value, value, value, value, value
+            )
+        }
+
+        var isConsistent: Bool {
+            withUnsafeBytes(of: values) { raw in
+                let words = raw.bindMemory(to: Int.self)
+                return words.allSatisfy { $0 == words[0] }
+            }
+        }
+    }
+
+    /// The same property under a copy long enough for the flaw to be certain
+    /// rather than lucky: with the publish count unchecked this fails within a
+    /// few thousand reads, and with it checked it does not fail at all.
+    func testAWideValueIsNeverObservedHalfApplied() {
+        let slot = ParameterSlot(Wide(0))
+        let publishing = expectation(description: "publisher finished")
+
+        DispatchQueue.global().async {
+            for value in 1...300_000 { slot.publish(Wide(value)) }
+            publishing.fulfill()
+        }
+
+        var torn = 0
+        for _ in 0..<300_000 where !slot.load().isConsistent {
+            torn += 1
+        }
+
+        wait(for: [publishing], timeout: 60)
+        XCTAssertEqual(torn, 0, "a reader saw half of one set and half of another")
+    }
+
     func testLoadReturnsTheLastPublishedValue() {
         let slot = ParameterSlot(Pair(first: 0, second: 0))
         XCTAssertEqual(slot.load(), Pair(first: 0, second: 0))
@@ -76,21 +135,28 @@ final class ParameterSlotTests: XCTestCase {
 
     /// The point of the slot: a reader never sees one field from one set and
     /// another field from the next.
+    ///
+    /// Run long, because this is a race. Three slots alone made tearing rare
+    /// rather than impossible, and "rare" showed up here about once in two
+    /// hundred thousand reads — which on an audio thread is a crack in a
+    /// sentence every few minutes.
     func testConcurrentPublishesAreNeverObservedHalfApplied() {
         let slot = ParameterSlot(Pair(first: 0, second: 0))
         let publishing = expectation(description: "publisher finished")
 
         DispatchQueue.global().async {
-            for value in 1...200_000 {
+            for value in 1...1_000_000 {
                 slot.publish(Pair(first: value, second: value))
             }
             publishing.fulfill()
         }
 
-        for _ in 0..<200_000 {
+        var torn = 0
+        for _ in 0..<1_000_000 {
             let observed = slot.load()
-            XCTAssertEqual(observed.first, observed.second)
+            if observed.first != observed.second { torn += 1 }
         }
+        XCTAssertEqual(torn, 0, "a reader saw half of one set and half of another")
 
         wait(for: [publishing], timeout: 30)
     }

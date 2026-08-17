@@ -175,9 +175,9 @@ public final class HighBandShaper: AudioProcessor {
     private func measureAnalysisEnvelopes(count: Int) {
         delayed.withUnsafeBufferPointer { source in
             guard let base = source.baseAddress else { return }
-            analysisBank.measure(base, frameCount: count) { index, level, _ in
+            analysisBank.measure(base, frameCount: count) { index, level, frames in
                 var envelope = self.analysisEnvelopes[index]
-                envelope += (level - envelope) * HighBandShaper.smoothing
+                envelope += (level - envelope) * self.smoothing(frames: frames)
                 self.analysisEnvelopes[index] = withoutDenormals(envelope)
             }
         }
@@ -197,9 +197,9 @@ public final class HighBandShaper: AudioProcessor {
         for i in 0..<count { output[i] = noise[i] }
         output.withUnsafeMutableBufferPointer { samples in
             guard let base = samples.baseAddress else { return }
-            synthesisBank.process(base, frameCount: count) { index, level, _ in
+            synthesisBank.process(base, frameCount: count) { index, level, frames in
                 var envelope = self.synthesisEnvelopes[index]
-                envelope += (level - envelope) * HighBandShaper.smoothing
+                envelope += (level - envelope) * self.smoothing(frames: frames)
                 self.synthesisEnvelopes[index] = withoutDenormals(envelope)
 
                 // Envelope matched to envelope rather than a fixed gain: noise
@@ -211,9 +211,15 @@ public final class HighBandShaper: AudioProcessor {
     }
 
     /// Slow enough to average across a glottal period. A voiced band arrives in
-    /// bursts, so the block-to-block mean square swings widely, and a follower
+    /// bursts, so the chunk-to-chunk mean square swings widely, and a follower
     /// that chased it would settle near the peak of the swing rather than its
     /// average — which is the crest-factor mistake one level up.
-    private static let smoothing: Float = 0.12
+    ///
+    /// In seconds, not in callbacks: at sixty-four frames a fixed per-callback
+    /// coefficient works out to about one glottal period, which is exactly the
+    /// swing it is supposed to be averaging over.
+    private func smoothing(frames: Int) -> Float {
+        1 - expf(-(Float(frames) / sampleRate) / 0.045)
+    }
 
 }

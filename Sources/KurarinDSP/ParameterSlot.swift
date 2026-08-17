@@ -8,10 +8,18 @@ import KurarinAtomics
 /// feedforward ones can be momentarily unstable, and an unstable filter is a
 /// crack in the middle of a sentence rather than a smooth change.
 ///
-/// Three preallocated slots and one atomic index. The writer fills a slot the
-/// reader cannot be holding and then publishes it; the reader takes the index
-/// once and copies the whole set. Tearing would take three publishes landing
-/// inside a single copy, which no human moving a slider can produce.
+/// Three preallocated slots and a publish count that only ever goes up. The
+/// writer fills the slot the count is about to point at and then publishes the
+/// count; the reader takes the count, copies the slot, and takes the count
+/// again — if it moved, what it copied may be half of two different sets, so
+/// it tries once more.
+///
+/// Checking afterwards is the part that matters. Three slots alone make tearing
+/// unlikely rather than impossible: it takes three publishes inside one copy,
+/// which no hand on a slider produces but a preempted thread eventually meets.
+/// This test caught it once in about two hundred thousand reads. Comparing a
+/// count that never repeats turns "unlikely" into "detected", and the reader
+/// retries instead of returning nonsense.
 public final class ParameterSlot<Value: BitwiseCopyable>: @unchecked Sendable {
     private static var slotCount: Int { 3 }
 
@@ -33,14 +41,26 @@ public final class ParameterSlot<Value: BitwiseCopyable>: @unchecked Sendable {
 
     /// Control thread only. Never blocks the reader.
     public func publish(_ value: Value) {
-        let next = (kurarin_atomic_load_relaxed(index) + 1) % ParameterSlot.slotCount
-        storage[next] = value
-        kurarin_atomic_store_release(index, next)
+        // The count is the writer's own; only the store has to be atomic.
+        published += 1
+        storage[published % ParameterSlot.slotCount] = value
+        kurarin_atomic_store_release(index, published)
     }
 
-    /// Safe to call from the audio thread: one atomic load and one copy of a
-    /// trivial value, with no allocation or reference counting.
+    /// Safe to call from the audio thread: a couple of atomic loads and one
+    /// copy of a trivial value, with no allocation, no reference counting and
+    /// no lock. The retry cannot spin for long — the writer is a person moving
+    /// a control, not another audio thread — and it gives up rather than
+    /// looping forever if it somehow does.
     public func load() -> Value {
-        storage[kurarin_atomic_load_acquire(index)]
+        for _ in 0..<8 {
+            let before = kurarin_atomic_load_acquire(index)
+            let value = storage[before % ParameterSlot.slotCount]
+            if kurarin_atomic_load_acquire(index) == before { return value }
+        }
+        return storage[kurarin_atomic_load_acquire(index) % ParameterSlot.slotCount]
     }
+
+    /// Written and read only by the publishing thread.
+    private var published = 0
 }

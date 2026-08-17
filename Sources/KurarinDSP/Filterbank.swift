@@ -38,7 +38,7 @@ final class Filterbank {
     let bandCount: Int
 
     private let capacity: Int
-    private let hasFloor: Bool
+    private var floorFrequency: Float
 
     /// Carries the audio. Two sections: one is too gentle a slope to keep a
     /// loud band out of a quiet neighbour.
@@ -60,6 +60,17 @@ final class Filterbank {
     private var currentLow: [Float]
     private var band: [Float]
     private var measured: [Float]
+    /// What each band was scaled by last time, so this time can arrive at its
+    /// new value gradually. A gain that is constant within a chunk and jumps
+    /// between them is a step in the waveform: measured at a tenth of the
+    /// signal's amplitude at a word onset, where the per-sample smoothing it
+    /// replaced moved by less than half a percent per sample.
+    private var appliedGains: [Float]
+    /// Whether a band has ever been scaled. The ramp interpolates between the
+    /// last gain and this one, and before the first there is nothing to
+    /// interpolate from — starting at unity would let one chunk of whatever the
+    /// caller is suppressing through on the way down.
+    private var hasAppliedGain: [Bool]
 
     /// - Parameters:
     ///   - edges: crossover frequencies, ascending.
@@ -67,7 +78,7 @@ final class Filterbank {
     ///     content, used when measuring the lowest band. Zero leaves it open.
     init(sampleRate: Float, edges: [Float], floor: Float = 0, capacity: Int = 512) {
         self.capacity = capacity
-        hasFloor = floor > 0
+        floorFrequency = floor
         bandCount = edges.count + 1
 
         lowpasses = edges.map { frequency in
@@ -90,19 +101,22 @@ final class Filterbank {
             return filter
         }
 
-        reconstructionHigh = floor > 0
-            ? (0..<2).map { _ -> Biquad in
-                let filter = Biquad(sampleRate: sampleRate)
-                filter.configure(kind: .highpass, frequency: floor, q: 0.707)
-                return filter
-            }
-            : []
+        // Always allocated, whether or not a floor was asked for: a bank whose
+        // edges can move can have a floor added later, and a filter that does
+        // not exist cannot be configured.
+        reconstructionHigh = (0..<2).map { _ -> Biquad in
+            let filter = Biquad(sampleRate: sampleRate)
+            if floor > 0 { filter.configure(kind: .highpass, frequency: floor, q: 0.707) }
+            return filter
+        }
 
         source = [Float](repeating: 0, count: capacity)
         previousLow = [Float](repeating: 0, count: capacity)
         currentLow = [Float](repeating: 0, count: capacity)
         band = [Float](repeating: 0, count: capacity)
         measured = [Float](repeating: 0, count: capacity)
+        appliedGains = [Float](repeating: 1, count: bandCount)
+        hasAppliedGain = [Bool](repeating: false, count: bandCount)
     }
 
     /// Moves the crossovers. Recomputes coefficients, so it belongs on the
@@ -117,6 +131,7 @@ final class Filterbank {
             analysisHigh[index + 1].configure(kind: .highpass, frequency: frequency, q: 0.707)
         }
         if let floor, floor > 0 {
+            floorFrequency = floor
             analysisHigh[0].configure(kind: .highpass, frequency: floor, q: 0.707)
             reconstructionHigh.forEach {
                 $0.configure(kind: .highpass, frequency: floor, q: 0.707)
@@ -129,6 +144,10 @@ final class Filterbank {
         analysisHigh.forEach { $0.reset() }
         analysisLow.forEach { $0.reset() }
         reconstructionHigh.forEach { $0.reset() }
+        for i in appliedGains.indices {
+            appliedGains[i] = 1
+            hasAppliedGain[i] = false
+        }
     }
 
     /// Measures each band's level and applies whatever gain the caller returns.
@@ -162,7 +181,7 @@ final class Filterbank {
             let count = min(frameCount - offset, capacity)
             for i in 0..<count { source[i] = buffer[offset + i] }
             for index in 0..<bandCount {
-                level(index, measureBand(index, count: count), count)
+                level(index, measureBand(index, count: count, floorAlreadyApplied: false), count)
             }
             offset += count
         }
@@ -179,7 +198,7 @@ final class Filterbank {
             buffer[i] = 0
         }
 
-        if !reconstructionHigh.isEmpty {
+        if floorFrequency > 0 {
             source.withUnsafeMutableBufferPointer { base in
                 guard let pointer = base.baseAddress else { return }
                 reconstructionHigh.forEach { $0.process(pointer, frameCount: count) }
@@ -187,7 +206,12 @@ final class Filterbank {
         }
 
         for index in 0..<bandCount {
-            let level = measureBand(index, count: count)
+            // The floor has already been applied to `source` above, so the
+            // measurement must not apply it again: two passes of the same
+            // highpass took a third out of the lowest band, and a unit that
+            // measures with one bank and rebuilds with another then matched the
+            // two at the wrong ratio.
+            let level = measureBand(index, count: count, floorAlreadyApplied: true)
 
             if index < lowpasses.count {
                 for i in 0..<count { currentLow[i] = source[i] }
@@ -201,7 +225,17 @@ final class Filterbank {
             }
 
             let factor = gain(index, level, count)
-            for i in 0..<count { buffer[i] += band[i] * factor }
+            let previous = hasAppliedGain[index] ? appliedGains[index] : factor
+            hasAppliedGain[index] = true
+            if abs(factor - previous) < 1e-6 {
+                for i in 0..<count { buffer[i] += band[i] * factor }
+            } else {
+                let step = (factor - previous) / Float(count)
+                for i in 0..<count {
+                    buffer[i] += band[i] * (previous + step * Float(i))
+                }
+            }
+            appliedGains[index] = factor
 
             if index < lowpasses.count {
                 for i in 0..<count { previousLow[i] = currentLow[i] }
@@ -211,13 +245,13 @@ final class Filterbank {
 
     /// Root mean square of one band of the current `source`, through the
     /// measurement filters.
-    private func measureBand(_ index: Int, count: Int) -> Float {
+    private func measureBand(_ index: Int, count: Int, floorAlreadyApplied: Bool) -> Float {
         for i in 0..<count { measured[i] = source[i] }
 
         var sum: Float = 0
         measured.withUnsafeMutableBufferPointer { samples in
             guard let base = samples.baseAddress else { return }
-            if index > 0 || hasFloor {
+            if index > 0 || (floorFrequency > 0 && !floorAlreadyApplied) {
                 analysisHigh[index].process(base, frameCount: count)
             }
             if index < analysisLow.count {
