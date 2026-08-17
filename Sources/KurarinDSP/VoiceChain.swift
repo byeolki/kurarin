@@ -240,20 +240,38 @@ public final class VoiceChain {
         reverb.reset()
     }
 
+    /// Four stages, in the order the doc comment above describes them:
+    /// find out what the signal is, clean it, change who it sounds like, and
+    /// shape the result.
     public func process(_ buffer: UnsafeMutablePointer<Float>, frameCount: Int) {
         if inputGain != 1 {
             for i in 0..<frameCount { buffer[i] *= inputGain }
         }
 
-        // Analysed before anything has been done to it: a gate that has
-        // already closed, or a click that has already been ducked, would make
-        // the tracker answer a question about audio nobody is going to hear.
+        analyse(buffer, frameCount: frameCount)
+        clean(buffer, frameCount: frameCount)
+        shift(buffer, frameCount: frameCount)
+        shape(buffer, frameCount: frameCount)
+
+        if outputGain != 1 {
+            for i in 0..<frameCount { buffer[i] *= outputGain }
+        }
+    }
+
+    /// Works out whether this is a voice, and tells everything that needs to
+    /// know.
+    ///
+    /// Runs before anything has been done to the signal: a gate that has
+    /// already closed, or a click that has already been ducked, would make the
+    /// tracker answer a question about audio nobody is going to hear.
+    private func analyse(_ buffer: UnsafeMutablePointer<Float>, frameCount: Int) {
         tracker.push(buffer, frameCount: frameCount)
         samplesSinceAnalysis += frameCount
         while samplesSinceAnalysis >= analysisHop {
             samplesSinceAnalysis -= analysisHop
             tracker.analyse()
         }
+
         let voiced = tracker.isVoiced
         suppressor.isVoiced = voiced
         gate.isVoiced = voiced
@@ -261,26 +279,36 @@ public final class VoiceChain {
         denoiser.isVoiced = voiced
         highShaper.isVoiced = voiced
         updatePitchRatioForTarget(voiced: voiced, frameCount: frameCount)
+    }
 
+    /// Takes out what nobody wants to hear, in the order that lets each unit
+    /// help the next.
+    private func clean(_ buffer: UnsafeMutablePointer<Float>, frameCount: Int) {
         // Clicks first: a key press is loud enough to hold a gate open, and
         // removing it before the gate decides anything keeps the two from
         // arguing.
         suppressor.process(buffer, frameCount: frameCount)
-        // Hum before the broadband reducer. It is a handful of tones rather
-        // than a floor, so the reducer cannot reach it without taking the voice
-        // in the same band along — and with the tones gone, what the reducer
-        // measures as the floor is the floor.
+        // Then hum, before the broadband reducer. It is a handful of tones
+        // rather than a floor, so the reducer cannot reach it without taking
+        // the voice in the same band along — and with the tones gone, what the
+        // reducer measures as the floor is the floor.
         humRemover.process(buffer, frameCount: frameCount)
-        // Steady noise next, before the gate: with the room tone already taken
-        // out, the gate has a much clearer difference between speech and
-        // silence to work with, and can sit at a gentler threshold.
+        // Then the floor itself, still before the gate: with the room tone
+        // taken out, the gate has a much clearer difference between speech and
+        // silence to work with and can sit at a gentler threshold.
         denoiser.process(buffer, frameCount: frameCount)
         gate.process(buffer, frameCount: frameCount)
+        // Last, because low-frequency rumble is what makes a pitch tracker
+        // report an octave too low — and the tracker has already had its look.
         highPass.process(buffer, frameCount: frameCount)
-        // Harmonics one way, air the other. Below the split the voice is
-        // periodic and the shifter's repetition is exactly right; above it the
-        // signal is breath and hiss, and repeating that is what makes a shifted
-        // voice buzz.
+    }
+
+    /// Harmonics one way, air the other.
+    ///
+    /// Below the split the voice is periodic and the shifter's repetition is
+    /// exactly right; above it the signal is breath and hiss, and repeating
+    /// that is what makes a shifted voice buzz.
+    private func shift(_ buffer: UnsafeMutablePointer<Float>, frameCount: Int) {
         lowScratch.withUnsafeMutableBufferPointer { low in
             highScratch.withUnsafeMutableBufferPointer { high in
                 guard let lowBase = low.baseAddress, let highBase = high.baseAddress else { return }
@@ -307,16 +335,16 @@ public final class VoiceChain {
                 }
             }
         }
-        // Straight after the shifter, where the uniform scaling it applied is
-        // still the only thing shaping the formants.
+    }
+
+    /// Everything that shapes the voice the listener actually hears.
+    private func shape(_ buffer: UnsafeMutablePointer<Float>, frameCount: Int) {
+        // First, while the shifter's uniform scaling is still the only thing
+        // that has moved the formants.
         formantCorrector.process(buffer, frameCount: frameCount)
         breath.process(buffer, frameCount: frameCount)
         eq.process(buffer, frameCount: frameCount)
         drive.process(buffer, frameCount: frameCount)
         reverb.process(buffer, frameCount: frameCount)
-
-        if outputGain != 1 {
-            for i in 0..<frameCount { buffer[i] *= outputGain }
-        }
     }
 }
