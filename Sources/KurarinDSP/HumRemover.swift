@@ -45,13 +45,13 @@ public final class HumRemover: AudioProcessor {
 
     private let sampleRate: Float
     private var notches: [Biquad]
-    private var configuredHz: Float = 0
-    private var configuredStrength: Float = 0
 
-    /// Goertzel accumulators, one per frequency of interest. A quarter of a
-    /// second resolves fifty from sixty with room to spare and reacts faster
-    /// than anyone can plug in a cable.
+    /// Goertzel accumulators, one per frequency of interest.
     private var detectors: [Goertzel]
+    /// Filled in place rather than mapped into a new array: this runs on the
+    /// audio thread, where a malloc is a dropped buffer waiting for a contended
+    /// allocator lock.
+    private var magnitudes: [Float]
     private var windowRemaining: Int
     private let windowLength: Int
 
@@ -72,6 +72,7 @@ public final class HumRemover: AudioProcessor {
         detectors = (HumRemover.candidates + HumRemover.referencesHz).map {
             Goertzel(frequency: $0, sampleRate: sampleRate)
         }
+        magnitudes = [Float](repeating: 0, count: detectors.count)
     }
 
     public func reset() {
@@ -79,12 +80,15 @@ public final class HumRemover: AudioProcessor {
         detectors.indices.forEach { detectors[$0].reset() }
         windowRemaining = windowLength
         detectedHz = 0
-        configuredHz = 0
     }
 
     public func process(_ buffer: UnsafeMutablePointer<Float>, frameCount: Int) {
         guard strength > 0.001 else {
-            if detectedHz != 0 { reset() }
+            // Including the half-finished window. Resuming a measurement across
+            // a gap of arbitrary length measures a second of audio that was
+            // never contiguous, and the first second after switching back on is
+            // exactly when someone is listening for a difference.
+            reset()
             return
         }
 
@@ -126,11 +130,16 @@ public final class HumRemover: AudioProcessor {
         guard windowRemaining <= 0 else { return }
         windowRemaining = windowLength
 
-        let magnitudes = detectors.map { $0.magnitude }
-        detectors.indices.forEach { detectors[$0].reset() }
+        for index in detectors.indices {
+            magnitudes[index] = detectors[index].magnitude
+            detectors[index].reset()
+        }
 
-        let references = magnitudes.suffix(HumRemover.referencesHz.count)
-        let reference = max(references.reduce(0, +) / Float(references.count), 1e-9)
+        var referenceSum: Float = 0
+        for index in HumRemover.candidates.count..<magnitudes.count {
+            referenceSum += magnitudes[index]
+        }
+        let reference = max(referenceSum / Float(HumRemover.referencesHz.count), 1e-9)
         var bestFrequency: Float = 0
         var bestMagnitude: Float = 0
         for (index, frequency) in HumRemover.candidates.enumerated()
@@ -142,16 +151,17 @@ public final class HumRemover: AudioProcessor {
         // Eight times the level between the candidates. A room with no hum
         // wanders around its noise floor and never clears this; a room with hum
         // clears it by a wide margin.
+        // Only when it changes. Depth is a blend against the dry signal, so
+        // strength does not touch the coefficients and moving that slider is no
+        // reason to recompute eight biquads inside the callback.
         let found = bestMagnitude > reference * 8 ? bestFrequency : 0
-        if found != detectedHz || strength != configuredStrength {
+        if found != detectedHz {
             detectedHz = found
             configure()
         }
     }
 
     private func configure() {
-        configuredHz = detectedHz
-        configuredStrength = strength
         guard detectedHz > 0 else { return }
 
         let nyquist = sampleRate * 0.45

@@ -152,10 +152,13 @@ public final class HighBandShaper: AudioProcessor {
         // stepping between the real band and the rebuilt one at a block
         // boundary is a click.
         let target: Float = isVoiced ? 1 : 0
-        // In seconds, like everything else here: a fixed step per callback is
-        // a twenty millisecond crossfade at a sixty-four frame buffer and a
-        // hundred and eighty at five hundred and twelve.
-        voicedBlend += (target - voicedBlend) * (1 - expf(-(Float(count) / sampleRate) / 0.020))
+        // Five milliseconds, in seconds rather than in callbacks — a fixed
+        // step per callback was five at a sixty-four frame buffer and forty at
+        // five hundred and twelve. Long enough not to click, short enough that
+        // the rebuilt band is gone by the time an "s" is underway: at twenty
+        // the synthetic noise was still audible seventy milliseconds into every
+        // fricative.
+        voicedBlend += (target - voicedBlend) * (1 - expf(-(Float(count) / sampleRate) / 0.005))
         let blend = min(max(mix, 0), 1) * voicedBlend
         // The envelopes and the filters are kept current even when the rebuilt
         // band is not being used, so that turning it up resumes from what the

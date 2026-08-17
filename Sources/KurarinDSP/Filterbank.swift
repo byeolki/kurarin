@@ -76,10 +76,10 @@ final class Filterbank {
     ///   - edges: crossover frequencies, ascending.
     ///   - floor: frequency below which the input is not expected to have
     ///     content, used when measuring and when rebuilding the lowest band.
-    ///     Zero leaves it open, and whether there is one is fixed here — the
-    ///     frequency can move later, but a bank without a floor cannot grow one,
-    ///     because that flag is read by the audio thread and nothing else in
-    ///     this class is written behind its back.
+    ///     Zero leaves it open. Whether there is a floor is fixed here and
+    ///     cannot be added later — `setEdges` will refuse — because that flag is
+    ///     read by the audio thread, and nothing else in this class is written
+    ///     behind its back. The frequency itself can move.
     init(sampleRate: Float, edges: [Float], floor: Float = 0, capacity: Int = 512) {
         self.capacity = capacity
         hasFloor = floor > 0

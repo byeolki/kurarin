@@ -123,3 +123,40 @@ final class HumRemoverTests: XCTestCase {
         XCTAssertTrue(Signal.isFinite(processStreaming(unit, Signal.noise(frames: 24000, amplitude: 0.9))))
     }
 }
+
+extension HumRemoverTests {
+    /// Switching off has to discard the half-finished measurement.
+    ///
+    /// A window that resumes across a gap measures a second of audio that was
+    /// never contiguous — nine tenths of it hum from before the pause and a
+    /// tenth of it whatever is playing now — and reports whichever of those
+    /// happened to dominate.
+    func testTurningItOffDiscardsThePartialMeasurement() {
+        let unit = remover(1)
+
+        // Most of a window of hum, but not a whole one.
+        _ = processStreaming(unit, hum(60, frames: 40000))
+        XCTAssertEqual(unit.detectedHz, 0, "no window has completed yet")
+
+        unit.strength = 0
+        _ = processStreaming(unit, Signal.silence(frames: 4800))
+
+        // Back on, in a room that now has no hum in it at all.
+        unit.strength = 1
+        _ = processStreaming(unit, Signal.noise(frames: 60000, amplitude: 0.02))
+        XCTAssertEqual(unit.detectedHz, 0, "hum from before the pause was counted as hum now")
+    }
+
+    /// And it still finds hum that arrives after the pause.
+    func testItStillFindsHumAfterBeingTurnedBackOn() {
+        let unit = remover(1)
+        _ = processStreaming(unit, hum(50, frames: 40000))
+
+        unit.strength = 0
+        _ = processStreaming(unit, Signal.silence(frames: 4800))
+        unit.strength = 1
+        _ = processStreaming(unit, hum(50, frames: 96000))
+
+        XCTAssertEqual(unit.detectedHz, 50)
+    }
+}
