@@ -105,12 +105,13 @@ Real-time rules for anything reachable from this callback: no allocation, no
 locks, no Objective-C messaging, no dynamic dispatch through the Swift runtime.
 Buffers are preallocated at their maximum block size.
 
-The first of those is enforced rather than assumed. `AllocationTests` installs
-a counter on Darwin's `malloc_logger` and drives the whole chain, every unit
-individually, and the pitch tracker, asserting that none of them touch the
-heap. It runs in release only — a debug build allocates per loop iteration for
-bookkeeping the optimiser removes — and it is wired into `make test` and CI as
-a separate step.
+The first of those is enforced rather than assumed. A counter installed on
+Darwin's `malloc_logger` drives the whole chain, every DSP unit individually,
+the pitch tracker, the soundboard mixer across voices retiring mid-block, and
+the channel router over each of the three buffer packings Core Audio may hand
+it — asserting that none of them touch the heap. It runs in release only, since
+a debug build allocates per loop iteration for bookkeeping the optimiser
+removes, and it is wired into `make test` and CI as a separate step.
 
 Data crosses the boundary in one of three ways:
 

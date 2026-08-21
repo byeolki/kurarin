@@ -35,12 +35,19 @@ might.** No `malloc`, no Swift array growth, no Objective-C messaging, no
 a change makes the audio thread touch a file, a decoder or a lock, it is the
 wrong change.
 
-`Tests/KurarinDSPTests/AllocationTests.swift` checks this rather than trusting
-it, by counting heap traffic through Darwin's `malloc_logger` while the chain
-runs. It needs the optimiser, so it is a separate step — `make test` runs it,
-or `swift test -c release --filter AllocationTests` on its own. Run in a debug
-build it skips itself, because without optimisation Swift allocates once per
-loop iteration for bookkeeping release removes.
+Three suites check this rather than trusting it, by counting heap traffic
+through Darwin's `malloc_logger` while the code runs: `AllocationTests` for the
+DSP chain, `MixerAllocationTests` for the soundboard, `RouterAllocationTests`
+for the channel routing. They need the optimiser, so they are a separate step —
+`make test` runs them, or `swift test -c release --filter '.*AllocationTests'`
+on its own. Run in a debug build they skip themselves, because without
+optimisation Swift allocates once per loop iteration for bookkeeping release
+removes.
+
+If you add one, take the count into a local before asserting on it.
+`XCTAssertEqual(kurarin_alloc_probe_end(), 0)` takes autoclosures, so the
+assertion allocates while the probe is still counting and every measurement
+comes back one or two high.
 
 **The driver stays boring.** It runs inside `coreaudiod`, so a crash there takes
 down audio for the entire machine. New behaviour belongs in the app unless it

@@ -20,7 +20,7 @@ let package = Package(
 
         .testTarget(name: "KurarinDSPTests", dependencies: ["KurarinDSP", "KurarinAllocProbe"]),
         .testTarget(name: "KurarinPresetsTests", dependencies: ["KurarinPresets"]),
-        .testTarget(name: "KurarinSoundboardTests", dependencies: ["KurarinSoundboard"]),
-        .testTarget(name: "KurarinEngineTests", dependencies: ["KurarinEngine"]),
+        .testTarget(name: "KurarinSoundboardTests", dependencies: ["KurarinSoundboard", "KurarinAllocProbe"]),
+        .testTarget(name: "KurarinEngineTests", dependencies: ["KurarinEngine", "KurarinAllocProbe"]),
     ]
 )

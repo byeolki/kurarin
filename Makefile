@@ -72,7 +72,7 @@ test:
 # release removes, so every unit would look like it allocates once per sample.
 # They skip themselves rather than fail if run the other way.
 test-realtime:
-	swift test -c release --filter AllocationTests
+	swift test -c release --filter '.*AllocationTests'
 
 # --- installation ---------------------------------------------------------
 
