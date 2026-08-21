@@ -73,6 +73,49 @@ public final class TransientSuppressor: AudioProcessor {
         misfire = false
     }
 
+    /// Everything the detector needs that is fixed for the length of one
+    /// block. Derived once rather than per sample: these depend only on the
+    /// strength and the voicing verdict, and both are set by the caller before
+    /// the block starts.
+    private struct BlockSettings {
+        let fast: Float
+        let medium: Float
+        let slow: Float
+        let release: Float
+        let recovery: Float
+        let holdSamples: Int
+        /// Past this, whatever it is, it is not a click.
+        let sustainedLimit: Int
+        /// Long enough to cross the gap between glottal pulses of even a deep
+        /// voice, short enough that two separate clicks are still two events.
+        let bridgeSamples: Int
+        /// Measured against what the voice is doing right now rather than
+        /// against the room: a knock is only a little louder than a shout in
+        /// absolute terms, but it gets there in a fraction of the time.
+        /// Voicing asks for more before acting, because ducking is audible
+        /// against a held note and consonants are transients too.
+        let ratioThreshold: Float
+        /// How far down a detected transient is pushed. Shallower while
+        /// voiced, where the cure is more audible than the disease.
+        let duckGain: Float
+    }
+
+    private func settings(amount: Float) -> BlockSettings {
+        let depth = (isVoiced ? 0.6 : 1) * amount
+        return BlockSettings(
+            fast: coefficient(forMilliseconds: 1),
+            medium: coefficient(forMilliseconds: 15),
+            slow: coefficient(forMilliseconds: 200),
+            release: coefficient(forMilliseconds: 40),
+            recovery: coefficient(forMilliseconds: 4),
+            holdSamples: Int(0.010 * sampleRate),
+            sustainedLimit: Int(0.010 * sampleRate),
+            bridgeSamples: Int(0.020 * sampleRate),
+            ratioThreshold: isVoiced ? 4.5 : 3.5,
+            duckGain: 1 - 0.95 * depth
+        )
+    }
+
     public func process(_ buffer: UnsafeMutablePointer<Float>, frameCount: Int) {
         let amount = min(max(strength, 0), 1)
         guard amount > 0.001 else {
@@ -82,99 +125,96 @@ public final class TransientSuppressor: AudioProcessor {
             return
         }
 
-        let fastCoefficient = coefficient(forMilliseconds: 1)
-        let mediumCoefficient = coefficient(forMilliseconds: 15)
-        let slowCoefficient = coefficient(forMilliseconds: 200)
-        let holdSamples = Int(0.010 * sampleRate)
-        // Past this, whatever it is, it is not a click.
-        let sustainedLimit = Int(0.010 * sampleRate)
-        // Long enough to cross the gap between glottal pulses of even a deep
-        // voice, short enough that two separate clicks are still two events.
-        let bridgeSamples = Int(0.020 * sampleRate)
-
-        // Measured against what the voice is doing right now rather than
-        // against the room: a knock is only a little louder than a shout in
-        // absolute terms, but it gets there in a fraction of the time.
-        // Voicing asks for more before acting, because ducking is audible
-        // against a held note and consonants are transients too.
-        let ratioThreshold: Float = isVoiced ? 4.5 : 3.5
-        // How far down a detected transient is pushed. Shallower while voiced,
-        // where the cure is more audible than the disease.
-        let depth = (isVoiced ? 0.6 : 1) * amount
-        let duckGain = 1 - 0.95 * depth
-        let releaseCoefficient = coefficient(forMilliseconds: 40)
-        let recoveryCoefficient = coefficient(forMilliseconds: 4)
+        let settings = settings(amount: amount)
 
         delayLine.withUnsafeMutableBufferPointer { delay in
             for i in 0..<frameCount {
+                // Detection reads the live sample; the gain is applied to the
+                // one leaving the delay line, which is what buys the lookahead.
                 let input = buffer[i]
                 let delayed = delay[writeIndex]
                 delay[writeIndex] = input
                 writeIndex = (writeIndex + 1) % delay.count
 
-                let magnitude = abs(input)
-                fastEnvelope = magnitude > fastEnvelope
-                    ? magnitude
-                    : fastEnvelope * fastCoefficient + magnitude * (1 - fastCoefficient)
-                // The medium and slow followers deliberately do not jump to a
-                // peak: they are the thing being compared against, and a
-                // reference that leaps with the click would hide it.
-                mediumEnvelope += (magnitude - mediumEnvelope) * (1 - mediumCoefficient)
-                slowEnvelope += (magnitude - slowEnvelope) * (1 - slowCoefficient)
-
-                // A floor on the reference: against digital silence every
-                // sound is infinitely sudden, and the first word after a
-                // pause is not a click.
-                let reference = max(mediumEnvelope, slowEnvelope, 0.0015)
-                let above = fastEnvelope > reference * ratioThreshold
-                quietSamples = above ? 0 : quietSamples + 1
-
-                // A dip is not the end of a sound. Voiced speech is a train of
-                // pulses with gaps between them, and a gap is longer than the
-                // click being looked for — so the count keeps running across a
-                // short quiet stretch and only a real silence resets it.
-                // Without this bridge, every glottal pulse of a held vowel
-                // looks like a fresh transient and the note is ducked over and
-                // over.
-                if above || quietSamples <= bridgeSamples {
-                    elevatedSamples += 1
-                } else {
-                    elevatedSamples = 0
-                }
-
-                if above && elevatedSamples <= sustainedLimit {
-                    holdCounter = holdSamples
-                } else if elevatedSamples > sustainedLimit && holdCounter > 0 {
-                    // Gone on too long to be a click: a vowel swelling, a word
-                    // starting, a note being held. Let go rather than strangle
-                    // it — and let go quickly, because what is being restored
-                    // is something the listener is waiting to hear.
-                    holdCounter = 0
-                    misfire = true
-                }
-
-                let target: Float
-                if holdCounter > 0 {
-                    holdCounter -= 1
-                    target = duckGain
-                } else {
-                    target = 1
-                }
-
-                // Instant downwards, gentle upwards: the peak being ducked has
-                // not left the delay line yet, so there is no need to ease into
-                // it, while easing out avoids a click of its own.
-                if target < gain {
-                    gain = target
-                } else {
-                    gain = target + (gain - target) * (misfire ? recoveryCoefficient : releaseCoefficient)
-                    if gain > 0.999 { misfire = false }
-                }
-
-                buffer[i] = delayed * gain
+                let sudden = isSudden(magnitude: abs(input), settings)
+                buffer[i] = delayed * nextGain(sudden: sudden, settings)
             }
         }
 
+        flushDenormals()
+    }
+
+    /// Advances the three envelope followers and reports whether this sample
+    /// belongs to something rising faster than a vocal tract can manage.
+    ///
+    /// Also carries the run-length bookkeeping the gain stage needs, because
+    /// it is a statement about the signal rather than about the ducking.
+    private func isSudden(magnitude: Float, _ settings: BlockSettings) -> Bool {
+        fastEnvelope = magnitude > fastEnvelope
+            ? magnitude
+            : fastEnvelope * settings.fast + magnitude * (1 - settings.fast)
+        // The medium and slow followers deliberately do not jump to a peak:
+        // they are the thing being compared against, and a reference that
+        // leaps with the click would hide it.
+        mediumEnvelope += (magnitude - mediumEnvelope) * (1 - settings.medium)
+        slowEnvelope += (magnitude - slowEnvelope) * (1 - settings.slow)
+
+        // A floor on the reference: against digital silence every sound is
+        // infinitely sudden, and the first word after a pause is not a click.
+        let reference = max(mediumEnvelope, slowEnvelope, 0.0015)
+        let above = fastEnvelope > reference * settings.ratioThreshold
+        quietSamples = above ? 0 : quietSamples + 1
+
+        // A dip is not the end of a sound. Voiced speech is a train of pulses
+        // with gaps between them, and a gap is longer than the click being
+        // looked for — so the count keeps running across a short quiet stretch
+        // and only a real silence resets it. Without this bridge, every
+        // glottal pulse of a held vowel looks like a fresh transient and the
+        // note is ducked over and over.
+        if above || quietSamples <= settings.bridgeSamples {
+            elevatedSamples += 1
+        } else {
+            elevatedSamples = 0
+        }
+
+        return above
+    }
+
+    /// Turns the verdict into the gain this sample carries, holding the duck
+    /// open for a while and easing back out of it.
+    private func nextGain(sudden: Bool, _ settings: BlockSettings) -> Float {
+        if sudden && elevatedSamples <= settings.sustainedLimit {
+            holdCounter = settings.holdSamples
+        } else if elevatedSamples > settings.sustainedLimit && holdCounter > 0 {
+            // Gone on too long to be a click: a vowel swelling, a word
+            // starting, a note being held. Let go rather than strangle it —
+            // and let go quickly, because what is being restored is something
+            // the listener is waiting to hear.
+            holdCounter = 0
+            misfire = true
+        }
+
+        let target: Float
+        if holdCounter > 0 {
+            holdCounter -= 1
+            target = settings.duckGain
+        } else {
+            target = 1
+        }
+
+        // Instant downwards, gentle upwards: the peak being ducked has not
+        // left the delay line yet, so there is no need to ease into it, while
+        // easing out avoids a click of its own.
+        if target < gain {
+            gain = target
+        } else {
+            gain = target + (gain - target) * (misfire ? settings.recovery : settings.release)
+            if gain > 0.999 { misfire = false }
+        }
+        return gain
+    }
+
+    private func flushDenormals() {
         fastEnvelope = withoutDenormals(fastEnvelope)
         mediumEnvelope = withoutDenormals(mediumEnvelope)
         slowEnvelope = withoutDenormals(slowEnvelope)

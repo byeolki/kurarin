@@ -133,9 +133,10 @@ public final class PitchTracker {
 
     /// Runs one estimate over the most recent history.
     ///
-    /// Updates `periodSamples`, `isVoiced` and `confidence`. When the frame is
-    /// unvoiced the previous period is left in place, so callers that want a
-    /// plausible period during a fricative can keep using it.
+    /// The four steps of YIN, in order. Updates `periodSamples`, `isVoiced`
+    /// and `confidence`. When the frame is unvoiced the previous period is
+    /// left in place, so callers that want a plausible period during a
+    /// fricative can keep using it.
     public func analyse() {
         guard historyFill >= historySpan else {
             isVoiced = false
@@ -146,80 +147,96 @@ public final class PitchTracker {
         let start = windowStart
         history.withUnsafeBufferPointer { historyBuffer in
             guard let base = historyBuffer.baseAddress else { return }
-            let x = base + start
             difference.withUnsafeMutableBufferPointer { diffBuffer in
                 normalised.withUnsafeMutableBufferPointer { normBuffer in
-                    guard let d = diffBuffer.baseAddress, let dPrime = normBuffer.baseAddress else { return }
+                    guard let d = diffBuffer.baseAddress,
+                          let dPrime = normBuffer.baseAddress else { return }
 
-                    d[0] = 0
-                    for lag in 1...maximumLag {
-                        var sum: Float = 0
-                        for j in 0..<windowSize {
-                            let delta = x[j] - x[j + lag]
-                            sum += delta * delta
-                        }
-                        d[lag] = sum
-                    }
+                    differenceFunction(of: base + start, into: d)
+                    cumulativeMeanNormalise(d, into: dPrime)
 
-                    // Cumulative mean normalisation. Without it the difference
-                    // function is smallest at lag 0 and every octave error
-                    // below the true period wins.
-                    dPrime[0] = 1
-                    var runningSum: Float = 0
-                    for lag in 1...maximumLag {
-                        runningSum += d[lag]
-                        dPrime[lag] = runningSum > 0 ? d[lag] * Float(lag) / runningSum : 1
-                    }
-
-                    var chosenLag = -1
-                    var lag = minimumLag
-                    while lag <= maximumLag {
-                        if dPrime[lag] < PitchTracker.voicingThreshold {
-                            // Walk to the bottom of this dip rather than taking
-                            // the first sample under the threshold.
-                            while lag + 1 <= maximumLag && dPrime[lag + 1] < dPrime[lag] {
-                                lag += 1
-                            }
-                            chosenLag = lag
-                            break
-                        }
-                        lag += 1
-                    }
-
-                    if chosenLag < 0 {
-                        var bestLag = minimumLag
-                        var bestValue = dPrime[minimumLag]
-                        for candidate in minimumLag...maximumLag where dPrime[candidate] < bestValue {
-                            bestValue = dPrime[candidate]
-                            bestLag = candidate
-                        }
-                        chosenLag = bestLag
-                        isVoiced = false
-                    } else {
-                        isVoiced = true
-                    }
-
-                    confidence = max(0, 1 - dPrime[chosenLag])
-
-                    // Parabolic interpolation recovers sub-sample resolution,
-                    // which matters because the estimate is scaled back up by
-                    // the decimation factor.
-                    var refined = Float(chosenLag)
-                    if chosenLag > minimumLag && chosenLag < maximumLag {
-                        let before = dPrime[chosenLag - 1]
-                        let here = dPrime[chosenLag]
-                        let after = dPrime[chosenLag + 1]
-                        let denominator = 2 * (2 * here - before - after)
-                        if abs(denominator) > 1e-9 {
-                            refined += (after - before) / denominator
-                        }
-                    }
-
+                    let choice = chooseLag(dPrime)
+                    isVoiced = choice.voiced
+                    confidence = max(0, 1 - dPrime[choice.lag])
                     if isVoiced {
-                        periodSamples = refined * Float(decimation)
+                        periodSamples = refine(lag: choice.lag, dPrime) * Float(decimation)
                     }
                 }
             }
         }
+    }
+
+    /// Squared difference between the window and itself at every candidate
+    /// lag.
+    ///
+    /// O(window × lag), and the hottest loop in the project — which is why
+    /// `appendToHistory` goes to the trouble of keeping the window flat.
+    private func differenceFunction(of x: UnsafePointer<Float>, into d: UnsafeMutablePointer<Float>) {
+        d[0] = 0
+        for lag in 1...maximumLag {
+            var sum: Float = 0
+            for i in 0..<windowSize {
+                let delta = x[i] - x[i + lag]
+                sum += delta * delta
+            }
+            d[lag] = sum
+        }
+    }
+
+    /// Cumulative mean normalisation. Without it the difference function is
+    /// smallest at lag 0 and every octave error below the true period wins.
+    private func cumulativeMeanNormalise(
+        _ d: UnsafePointer<Float>,
+        into dPrime: UnsafeMutablePointer<Float>
+    ) {
+        dPrime[0] = 1
+        var runningSum: Float = 0
+        for lag in 1...maximumLag {
+            runningSum += d[lag]
+            dPrime[lag] = runningSum > 0 ? d[lag] * Float(lag) / runningSum : 1
+        }
+    }
+
+    /// The first lag to dip under the threshold — the shortest plausible
+    /// period, not the best correlated one. A periodic signal scores just as
+    /// well at every multiple of its period, so taking the best would report
+    /// an octave low as often as not.
+    ///
+    /// Falls back to the global minimum with `voiced` false when nothing
+    /// clears the threshold, which is what lets an unvoiced frame still hand
+    /// back a usable number.
+    private func chooseLag(_ dPrime: UnsafePointer<Float>) -> (lag: Int, voiced: Bool) {
+        var lag = minimumLag
+        while lag <= maximumLag {
+            if dPrime[lag] < PitchTracker.voicingThreshold {
+                // Walk to the bottom of this dip rather than taking the first
+                // sample under the threshold.
+                while lag + 1 <= maximumLag && dPrime[lag + 1] < dPrime[lag] {
+                    lag += 1
+                }
+                return (lag, true)
+            }
+            lag += 1
+        }
+
+        var bestLag = minimumLag
+        var bestValue = dPrime[minimumLag]
+        for candidate in minimumLag...maximumLag where dPrime[candidate] < bestValue {
+            bestValue = dPrime[candidate]
+            bestLag = candidate
+        }
+        return (bestLag, false)
+    }
+
+    /// Parabolic interpolation for sub-sample resolution, which matters
+    /// because the estimate is scaled back up by the decimation factor.
+    private func refine(lag: Int, _ dPrime: UnsafePointer<Float>) -> Float {
+        guard lag > minimumLag, lag < maximumLag else { return Float(lag) }
+        let before = dPrime[lag - 1]
+        let here = dPrime[lag]
+        let after = dPrime[lag + 1]
+        let denominator = 2 * (2 * here - before - after)
+        guard abs(denominator) > 1e-9 else { return Float(lag) }
+        return Float(lag) + (after - before) / denominator
     }
 }
