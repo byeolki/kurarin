@@ -143,20 +143,70 @@ public final class KurarinEngine {
         chain.reset()
         limiter.reset()
 
-        // A denied capture permission should cost the capture feature, not the
-        // whole engine, so a failure here is logged into the tap being absent
-        // rather than thrown.
-        captureFailure = nil
-        if let source = configuration.captureSource {
-            do {
-                tap = try SystemAudioTap(source: source)
-            } catch {
-                // Silently losing system capture leaves the user wondering why
-                // nobody can hear their music.
-                captureFailure = error.localizedDescription
-            }
+        openTap(configuration.captureSource)
+        logConfiguration(microphone: microphone, configuration: configuration)
+
+        let device = try AggregateDevice(
+            microphone: microphone,
+            virtualDevice: virtualDevice,
+            monitor: configuration.monitor,
+            tap: tap,
+            sampleRate: configuration.sampleRate
+        )
+        aggregate = device
+        logLayout(of: device)
+
+        do {
+            ioProcID = try beginRendering(on: device)
+        } catch {
+            aggregate = nil
+            throw error
         }
 
+        isRunning = true
+        engineLog.notice("engine running")
+    }
+
+    /// Opens the system capture tap, if one was asked for.
+    ///
+    /// A denied capture permission should cost the capture feature, not the
+    /// whole engine, so a failure here is recorded in `captureFailure` rather
+    /// than thrown — but it is recorded, because silently losing system
+    /// capture leaves the user wondering why nobody can hear their music.
+    private func openTap(_ source: SystemAudioTap.Source?) {
+        captureFailure = nil
+        guard let source else { return }
+        do {
+            tap = try SystemAudioTap(source: source)
+        } catch {
+            captureFailure = error.localizedDescription
+        }
+    }
+
+    /// Installs the render callback and starts the device, leaving nothing
+    /// behind if either step fails.
+    private func beginRendering(on device: AggregateDevice) throws -> AudioDeviceIOProcID {
+        var procID: AudioDeviceIOProcID?
+        let status = AudioDeviceCreateIOProcIDWithBlock(&procID, device.deviceID, nil) {
+            [weak self] _, inputData, _, outputData, _ in
+            guard let self else { return }
+            self.render(input: inputData, output: outputData)
+        }
+        guard status == noErr, let procID else {
+            engineLog.error("installing the render callback failed: \(status)")
+            throw AudioDeviceError.coreAudio(status, "Installing the render callback")
+        }
+
+        let startStatus = AudioDeviceStart(device.deviceID, procID)
+        guard startStatus == noErr else {
+            engineLog.error("starting the aggregate failed: \(startStatus)")
+            AudioDeviceDestroyIOProcID(device.deviceID, procID)
+            throw AudioDeviceError.coreAudio(startStatus, "Starting the device")
+        }
+        return procID
+    }
+
+    private func logConfiguration(microphone: AudioDeviceInfo, configuration: Configuration) {
         engineLog.notice("""
             starting: microphone=\(microphone.name, privacy: .public) \
             (\(microphone.inputChannels)in/\(microphone.outputChannels)out) \
@@ -168,16 +218,9 @@ public final class KurarinEngine {
         if let captureFailure {
             engineLog.error("system capture unavailable: \(captureFailure, privacy: .public)")
         }
+    }
 
-        let device = try AggregateDevice(
-            microphone: microphone,
-            virtualDevice: virtualDevice,
-            monitor: configuration.monitor,
-            tap: tap,
-            sampleRate: configuration.sampleRate
-        )
-        aggregate = device
-
+    private func logLayout(of device: AggregateDevice) {
         let layout = device.layout
         engineLog.notice("""
             aggregate \(device.deviceID) built: \
@@ -189,31 +232,6 @@ public final class KurarinEngine {
             monitor out \(layout.monitorOutputOffset)..<\
             \(layout.monitorOutputOffset + layout.monitorChannels)
             """)
-
-        var procID: AudioDeviceIOProcID?
-        let status = AudioDeviceCreateIOProcIDWithBlock(&procID, device.deviceID, nil) {
-            [weak self] _, inputData, _, outputData, _ in
-            guard let self else { return }
-            self.render(input: inputData, output: outputData)
-        }
-        guard status == noErr, let procID else {
-            engineLog.error("installing the render callback failed: \(status)")
-            aggregate = nil
-            throw AudioDeviceError.coreAudio(status, "Installing the render callback")
-        }
-        ioProcID = procID
-
-        let startStatus = AudioDeviceStart(device.deviceID, procID)
-        guard startStatus == noErr else {
-            engineLog.error("starting the aggregate failed: \(startStatus)")
-            AudioDeviceDestroyIOProcID(device.deviceID, procID)
-            ioProcID = nil
-            aggregate = nil
-            throw AudioDeviceError.coreAudio(startStatus, "Starting the device")
-        }
-
-        isRunning = true
-        engineLog.notice("engine running")
     }
 
     /// What the callback has seen, for the interface to report. Written by the
