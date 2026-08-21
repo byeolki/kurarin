@@ -35,6 +35,13 @@ might.** No `malloc`, no Swift array growth, no Objective-C messaging, no
 a change makes the audio thread touch a file, a decoder or a lock, it is the
 wrong change.
 
+`Tests/KurarinDSPTests/AllocationTests.swift` checks this rather than trusting
+it, by counting heap traffic through Darwin's `malloc_logger` while the chain
+runs. It needs the optimiser, so it is a separate step — `make test` runs it,
+or `swift test -c release --filter AllocationTests` on its own. Run in a debug
+build it skips itself, because without optimisation Swift allocates once per
+loop iteration for bookkeeping release removes.
+
 **The driver stays boring.** It runs inside `coreaudiod`, so a crash there takes
 down audio for the entire machine. New behaviour belongs in the app unless it
 genuinely cannot live there.
@@ -51,7 +58,8 @@ forced it, or the failure it prevents.
 ## Pull requests
 
 - One concern per pull request.
-- `make test` passes, and `make` builds both products.
+- `make test` passes (which includes the release-mode real-time checks), and
+  `make` builds both products.
 - If the change touches routing, the driver or anything involving another
   application, say which items of [docs/manual-testing.md](docs/manual-testing.md) (Korean)
   you ran and on which macOS version. Those paths have no automated coverage.

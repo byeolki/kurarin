@@ -65,6 +65,14 @@ $(APP_BINARY): $(shell find Sources -name '*.swift' 2>/dev/null) Resources/App-I
 
 test:
 	swift test
+	$(MAKE) test-realtime
+
+# The real-time safety checks only mean anything with the optimiser on: a debug
+# build allocates and frees a block per loop iteration for bookkeeping that
+# release removes, so every unit would look like it allocates once per sample.
+# They skip themselves rather than fail if run the other way.
+test-realtime:
+	swift test -c release --filter AllocationTests
 
 # --- installation ---------------------------------------------------------
 

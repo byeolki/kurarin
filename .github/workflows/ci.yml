@@ -23,6 +23,12 @@ jobs:
       - name: Test
         run: swift test
 
+      # Separate because it needs the optimiser. Without it Swift allocates and
+      # frees per loop iteration for bookkeeping release removes, and every DSP
+      # unit would look like it breaks the rule this is here to enforce.
+      - name: Real-time safety
+        run: swift test -c release --filter AllocationTests
+
       # The driver is a plain clang bundle and the app is assembled by hand, so
       # both are worth building even though neither can be exercised here: a CI
       # runner has no audio hardware and cannot install a HAL plug-in.

@@ -10,13 +10,15 @@ let package = Package(
     ],
     targets: [
         .target(name: "KurarinAtomics"),
+        // Test-only: proves the audio path allocates nothing.
+        .target(name: "KurarinAllocProbe"),
         .target(name: "KurarinDSP", dependencies: ["KurarinAtomics"]),
         .target(name: "KurarinPresets", dependencies: ["KurarinDSP"]),
         .target(name: "KurarinSoundboard", dependencies: ["KurarinDSP", "KurarinAtomics"]),
         .target(name: "KurarinEngine", dependencies: ["KurarinDSP", "KurarinPresets", "KurarinSoundboard"]),
         .executableTarget(name: "KurarinApp", dependencies: ["KurarinEngine", "KurarinPresets", "KurarinSoundboard"]),
 
-        .testTarget(name: "KurarinDSPTests", dependencies: ["KurarinDSP"]),
+        .testTarget(name: "KurarinDSPTests", dependencies: ["KurarinDSP", "KurarinAllocProbe"]),
         .testTarget(name: "KurarinPresetsTests", dependencies: ["KurarinPresets"]),
         .testTarget(name: "KurarinSoundboardTests", dependencies: ["KurarinSoundboard"]),
         .testTarget(name: "KurarinEngineTests", dependencies: ["KurarinEngine"]),
