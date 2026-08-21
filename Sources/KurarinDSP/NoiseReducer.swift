@@ -77,6 +77,20 @@ public final class NoiseReducer: AudioProcessor {
         }
     }
 
+    /// The two numbers that decide how hard this block is cleaned. Fixed for
+    /// its duration, because both depend only on the strength and the voicing
+    /// verdict the caller sets before it starts.
+    private struct BlockSettings {
+        /// Over-subtraction: removing exactly the estimate leaves the noise
+        /// audibly present, because the estimate is an average and the noise
+        /// fluctuates around it. Removing rather more, with a floor under the
+        /// gain so nothing is ever silenced completely, is what makes the
+        /// result sound like a quieter room instead of a processed one.
+        let over: Float
+        let minimumGain: Float
+        let warmUpSamples: Int
+    }
+
     public func process(_ buffer: UnsafeMutablePointer<Float>, frameCount: Int) {
         guard strength > 0.001 else {
             // The filters still have to see the signal, or switching on after a
@@ -85,84 +99,120 @@ public final class NoiseReducer: AudioProcessor {
             return
         }
 
-        // Over-subtraction: removing exactly the estimate leaves the noise
-        // audibly present, because the estimate is an average and the noise
-        // fluctuates around it. Removing rather more, with a floor under the
-        // gain so nothing is ever silenced completely, is what makes the result
-        // sound like a quieter room instead of a processed one.
-        let over = 1.5 + 2 * strength * (isVoiced ? 0.6 : 1)
-        let minimumGain = powf(10, -(5 + 15 * strength) / 20)
-
-        let warmUpSamples = Int(0.2 * sampleRate)
+        let settings = BlockSettings(
+            over: 1.5 + 2 * strength * (isVoiced ? 0.6 : 1),
+            minimumGain: powf(10, -(5 + 15 * strength) / 20),
+            warmUpSamples: Int(0.2 * sampleRate)
+        )
 
         bank.process(buffer, frameCount: frameCount) { index, chunkLevel, frames in
-            // Expressed in seconds and converted per chunk, so that a host
-            // handing over sixty-four frames at a time and one handing over
-            // five hundred and twelve get the same behaviour rather than one
-            // adapting eight times faster than the other.
-            let elapsed = Float(frames) / self.sampleRate
-            func coefficient(_ seconds: Float) -> Float {
-                1 - expf(-elapsed / seconds)
-            }
-            // Opening fast and closing slowly: the quick one belongs to the
-            // direction that gives the signal back, because a word starts in a
-            // couple of milliseconds and a reducer that takes eighty to get out
-            // of the way swallows the beginning of every sentence.
-            let opening = coefficient(0.005)
-            let closing = coefficient(0.040)
-            let floorDown = coefficient(0.060)
-            let floorUp = coefficient(1.300)
-
-            var level = self.levels[index]
-            level += (chunkLevel - level) * coefficient(0.020)
-            self.levels[index] = withoutDenormals(level)
-
-            var floor = self.noiseFloors[index]
-
-            if self.warmUpBlocks[index] < warmUpSamples && !self.isVoiced {
-                // Learning starts on the room, not on whoever is already
-                // talking. Until something has been learned the gain stays at
-                // one: with no estimate, the safe thing to do is nothing.
-                self.warmUpBlocks[index] += frames
-                floor = level
-            } else if level < floor {
-                // Downwards is always safe: it can only make the reduction more
-                // cautious.
-                floor += (level - floor) * floorDown
-            } else if !self.isVoiced {
-                floor += (level - floor) * floorUp
-            }
-            self.noiseFloors[index] = withoutDenormals(floor)
-
-            guard self.warmUpBlocks[index] >= warmUpSamples, level > 0 else {
-                self.smoothed[index] = 1
-                self.gains[index] = 1
-                return 1
-            }
-
-            // Subtracted in power rather than in amplitude. A band carrying
-            // speech ten times above its noise loses a sixth of a decibel this
-            // way and a third of its amplitude the other — the difference
-            // between cleaning a signal and thinning it.
-            let ratio = floor / level
-            let remaining = 1 - over * ratio * ratio
-            let target = remaining > 0 ? max(sqrtf(remaining), minimumGain) : minimumGain
-
-            var gain = self.smoothed[index]
-            gain += (target - gain) * (target > gain ? opening : closing)
-            self.smoothed[index] = withoutDenormals(gain)
-            self.gains[index] = gain
-
-            // Neighbours are averaged in: the band below's gain from this block,
-            // the band above's from the last one. The reconstruction sums
-            // differences of lowpasses, which is exact when the bands move
-            // together and leaves a phase residue when one band is pulled away
-            // from its neighbours — enough, in the worst case, to make a tone
-            // come back louder than it went in. A noise floor is broadband, so
-            // the gains want to move together anyway; this makes sure they do.
-            let below = index > 0 ? self.gains[index - 1] : gain
-            let above = index + 1 < self.smoothed.count ? self.smoothed[index + 1] : gain
-            return (below + 2 * gain + above) * 0.25
+            self.gain(forBand: index, chunkLevel: chunkLevel, frames: frames, settings)
         }
+    }
+
+    /// What one band's gain should be for one chunk: follow the level, follow
+    /// the floor under it, subtract, then agree with the neighbours.
+    private func gain(
+        forBand index: Int,
+        chunkLevel: Float,
+        frames: Int,
+        _ settings: BlockSettings
+    ) -> Float {
+        // Expressed in seconds and converted per chunk, so that a host handing
+        // over sixty-four frames at a time and one handing over five hundred
+        // and twelve get the same behaviour rather than one adapting eight
+        // times faster than the other.
+        let elapsed = Float(frames) / sampleRate
+
+        let level = trackLevel(band: index, chunkLevel: chunkLevel, elapsed: elapsed)
+        let floor = trackFloor(band: index, level: level, frames: frames, elapsed: elapsed, settings)
+
+        guard warmUpBlocks[index] >= settings.warmUpSamples, level > 0 else {
+            smoothed[index] = 1
+            gains[index] = 1
+            return 1
+        }
+
+        let target = subtractionGain(level: level, floor: floor, settings)
+        return blendWithNeighbours(smooth(target, band: index, elapsed: elapsed), band: index)
+    }
+
+    /// Returns the level before denormal flushing, which is what the rest of
+    /// the estimate compares against; the flushed value is what is kept.
+    private func trackLevel(band index: Int, chunkLevel: Float, elapsed: Float) -> Float {
+        var level = levels[index]
+        level += (chunkLevel - level) * coefficient(0.020, elapsed)
+        levels[index] = withoutDenormals(level)
+        return level
+    }
+
+    /// Follows the quietest thing this band does, which is taken to be the
+    /// room.
+    private func trackFloor(
+        band index: Int,
+        level: Float,
+        frames: Int,
+        elapsed: Float,
+        _ settings: BlockSettings
+    ) -> Float {
+        var floor = noiseFloors[index]
+
+        if warmUpBlocks[index] < settings.warmUpSamples && !isVoiced {
+            // Learning starts on the room, not on whoever is already talking.
+            // Until something has been learned the gain stays at one: with no
+            // estimate, the safe thing to do is nothing.
+            warmUpBlocks[index] += frames
+            floor = level
+        } else if level < floor {
+            // Downwards is always safe: it can only make the reduction more
+            // cautious.
+            floor += (level - floor) * coefficient(0.060, elapsed)
+        } else if !isVoiced {
+            floor += (level - floor) * coefficient(1.300, elapsed)
+        }
+
+        noiseFloors[index] = withoutDenormals(floor)
+        return floor
+    }
+
+    /// Subtracted in power rather than in amplitude. A band carrying speech
+    /// ten times above its noise loses a sixth of a decibel this way and a
+    /// third of its amplitude the other — the difference between cleaning a
+    /// signal and thinning it.
+    private func subtractionGain(level: Float, floor: Float, _ settings: BlockSettings) -> Float {
+        let ratio = floor / level
+        let remaining = 1 - settings.over * ratio * ratio
+        return remaining > 0 ? max(sqrtf(remaining), settings.minimumGain) : settings.minimumGain
+    }
+
+    /// Opening fast and closing slowly: the quick one belongs to the direction
+    /// that gives the signal back, because a word starts in a couple of
+    /// milliseconds and a reducer that takes eighty to get out of the way
+    /// swallows the beginning of every sentence.
+    private func smooth(_ target: Float, band index: Int, elapsed: Float) -> Float {
+        var gain = smoothed[index]
+        let rate = target > gain ? coefficient(0.005, elapsed) : coefficient(0.040, elapsed)
+        gain += (target - gain) * rate
+        smoothed[index] = withoutDenormals(gain)
+        gains[index] = gain
+        return gain
+    }
+
+    /// Averages in the band below's gain from this chunk and the band above's
+    /// from the last one.
+    ///
+    /// The reconstruction sums differences of lowpasses, which is exact when
+    /// the bands move together and leaves a phase residue when one band is
+    /// pulled away from its neighbours — enough, in the worst case, to make a
+    /// tone come back louder than it went in. A noise floor is broadband, so
+    /// the gains want to move together anyway; this makes sure they do.
+    private func blendWithNeighbours(_ gain: Float, band index: Int) -> Float {
+        let below = index > 0 ? gains[index - 1] : gain
+        let above = index + 1 < smoothed.count ? smoothed[index + 1] : gain
+        return (below + 2 * gain + above) * 0.25
+    }
+
+    private func coefficient(_ seconds: Float, _ elapsed: Float) -> Float {
+        1 - expf(-elapsed / seconds)
     }
 }

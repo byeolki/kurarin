@@ -149,6 +149,10 @@ public final class TransientSuppressor: AudioProcessor {
     ///
     /// Also carries the run-length bookkeeping the gain stage needs, because
     /// it is a statement about the signal rather than about the ducking.
+    /// Forced inline because this runs per sample: splitting the loop body
+    /// out cost a quarter of the unit's time when the optimiser was left to
+    /// decide, and the attribute gives all of it back.
+    @inline(__always)
     private func isSudden(magnitude: Float, _ settings: BlockSettings) -> Bool {
         fastEnvelope = magnitude > fastEnvelope
             ? magnitude
@@ -182,6 +186,7 @@ public final class TransientSuppressor: AudioProcessor {
 
     /// Turns the verdict into the gain this sample carries, holding the duck
     /// open for a while and easing back out of it.
+    @inline(__always)
     private func nextGain(sudden: Bool, _ settings: BlockSettings) -> Float {
         if sudden && elevatedSamples <= settings.sustainedLimit {
             holdCounter = settings.holdSamples
