@@ -44,14 +44,17 @@ public enum LatencyMode: String, Codable, CaseIterable, Sendable {
         }
     }
 
-    /// FFT size for the phase vocoder path used on unvoiced sounds.
-    public var fftSize: Int {
+    /// How often the pitch tracker re-runs, in frames.
+    ///
+    /// Not a transform hop: nothing in this chain takes a spectrum. What the
+    /// number buys is how quickly a pitch change is noticed, against the cost
+    /// of running YIN that often. The modes that reach a lower fundamental
+    /// need a longer correlation window, so they also analyse less often.
+    public var hopSize: Int {
         switch self {
-        case .low:      return 512
-        case .balanced: return 1024
-        case .quality:  return 2048
+        case .low:      return 128
+        case .balanced: return 256
+        case .quality:  return 512
         }
     }
-
-    public var hopSize: Int { fftSize / 4 }
 }

@@ -11,7 +11,7 @@ import Foundation
 /// a comb. Real bandpasses cannot do this — they are individually clean but
 /// they arrive at the crossovers out of phase with each other, and summing them
 /// digs a hole. Measured with edges at 200, 800, 3000 and 9000 Hz: nearly three
-/// decibels down at every crossover, which is audible as coloration on a
+/// decibels down at every crossover, which is audible as colouration on a
 /// filterbank that is supposed to be doing nothing.
 ///
 /// **Measuring** wants the opposite. A telescoping band has no lower bound in

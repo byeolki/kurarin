@@ -7,7 +7,7 @@ import Foundation
 /// low-frequency rumble is what makes a pitch tracker report an octave too low.
 /// EQ, drive and reverb run after, so they shape the voice the listener
 /// actually hears rather than one that is about to be transformed again.
-public final class VoiceChain {
+public final class VoiceChain: AudioProcessor {
     public let sampleRate: Float
     public private(set) var latencyMode: LatencyMode
 
