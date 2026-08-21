@@ -46,7 +46,36 @@ public enum SampleLoaderError: Error, LocalizedError {
 public enum SampleLoader {
     public static let maximumSeconds: Double = 120
 
+    /// How much of the file is handed to the converter at a time. Only a
+    /// working-set size — the whole decoded sample ends up in memory either
+    /// way.
+    private static let sourceCapacity: AVAudioFrameCount = 16384
+
     public static func load(_ url: URL, sampleRate: Double) throws -> [Float] {
+        let conversion = try prepare(url, sampleRate: sampleRate)
+        let samples = try drain(conversion, from: url)
+        guard !samples.isEmpty else { throw SampleLoaderError.empty(url) }
+        return samples
+    }
+
+    /// Everything needed to pump one file through the converter, all of it
+    /// established before a single sample is read.
+    private struct Conversion {
+        let file: AVAudioFile
+        let converter: AVAudioConverter
+        let source: AVAudioPCMBuffer
+        let target: AVAudioPCMBuffer
+        /// Output frames per input frame, used to size the destination.
+        let ratio: Double
+    }
+
+    /// Opens the file and builds the converter, rejecting anything the mixer
+    /// could not play.
+    ///
+    /// Every failure here is `.unreadable` bar the two the user can act on:
+    /// an empty file and one over the length limit. AVFoundation's own errors
+    /// name internal formats rather than anything worth showing.
+    private static func prepare(_ url: URL, sampleRate: Double) throws -> Conversion {
         guard let file = try? AVAudioFile(forReading: url) else {
             throw SampleLoaderError.unreadable(url)
         }
@@ -63,57 +92,71 @@ public enum SampleLoader {
             sampleRate: sampleRate,
             channels: 1,
             interleaved: false
-        ) else {
-            throw SampleLoaderError.unreadable(url)
-        }
-
-        guard let converter = AVAudioConverter(from: sourceFormat, to: targetFormat) else {
-            throw SampleLoaderError.unreadable(url)
-        }
-
-        let sourceCapacity: AVAudioFrameCount = 16384
-        guard let sourceBuffer = AVAudioPCMBuffer(pcmFormat: sourceFormat, frameCapacity: sourceCapacity) else {
+        ), let converter = AVAudioConverter(from: sourceFormat, to: targetFormat) else {
             throw SampleLoaderError.unreadable(url)
         }
 
         let ratio = sampleRate / sourceFormat.sampleRate
+        // Headroom on top of the ratio: a resampler emits its filter's priming
+        // frames on the first call, so the exact ratio is a floor rather than
+        // a bound.
         let targetCapacity = AVAudioFrameCount(Double(sourceCapacity) * ratio) + 1024
-        guard let targetBuffer = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: targetCapacity) else {
+
+        guard let source = AVAudioPCMBuffer(pcmFormat: sourceFormat, frameCapacity: sourceCapacity),
+              let target = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: targetCapacity) else {
             throw SampleLoaderError.unreadable(url)
         }
 
-        var samples: [Float] = []
-        samples.reserveCapacity(Int(Double(file.length) * ratio) + 1024)
-        var reachedEnd = false
+        return Conversion(file: file, converter: converter, source: source, target: target, ratio: ratio)
+    }
 
-        while !reachedEnd {
-            targetBuffer.frameLength = 0
+    /// Runs the converter until the file is exhausted, collecting the output.
+    private static func drain(_ conversion: Conversion, from url: URL) throws -> [Float] {
+        var samples: [Float] = []
+        samples.reserveCapacity(Int(Double(conversion.file.length) * conversion.ratio) + 1024)
+
+        while true {
+            conversion.target.frameLength = 0
             var conversionError: NSError?
-            let status = converter.convert(to: targetBuffer, error: &conversionError) { _, outStatus in
-                do {
-                    try file.read(into: sourceBuffer, frameCount: sourceCapacity)
-                } catch {
-                    outStatus.pointee = .endOfStream
-                    return nil
-                }
-                if sourceBuffer.frameLength == 0 {
-                    outStatus.pointee = .endOfStream
-                    return nil
-                }
-                outStatus.pointee = .haveData
-                return sourceBuffer
+            let status = conversion.converter.convert(
+                to: conversion.target,
+                error: &conversionError
+            ) { _, outStatus in
+                supply(conversion, outStatus)
             }
 
             if conversionError != nil { throw SampleLoaderError.unreadable(url) }
 
-            if let channel = targetBuffer.floatChannelData?[0], targetBuffer.frameLength > 0 {
-                samples.append(contentsOf: UnsafeBufferPointer(start: channel, count: Int(targetBuffer.frameLength)))
+            if let channel = conversion.target.floatChannelData?[0], conversion.target.frameLength > 0 {
+                samples.append(
+                    contentsOf: UnsafeBufferPointer(start: channel, count: Int(conversion.target.frameLength))
+                )
             }
 
-            if status == .endOfStream || status == .error { reachedEnd = true }
+            if status == .endOfStream || status == .error { return samples }
         }
+    }
 
-        guard !samples.isEmpty else { throw SampleLoaderError.empty(url) }
-        return samples
+    /// Reads the next block for the converter to consume.
+    ///
+    /// A read that throws is treated as the end rather than an error: a
+    /// truncated file should play what it has, and anything genuinely broken
+    /// has already failed in `prepare`.
+    private static func supply(
+        _ conversion: Conversion,
+        _ outStatus: UnsafeMutablePointer<AVAudioConverterInputStatus>
+    ) -> AVAudioBuffer? {
+        do {
+            try conversion.file.read(into: conversion.source, frameCount: sourceCapacity)
+        } catch {
+            outStatus.pointee = .endOfStream
+            return nil
+        }
+        guard conversion.source.frameLength > 0 else {
+            outStatus.pointee = .endOfStream
+            return nil
+        }
+        outStatus.pointee = .haveData
+        return conversion.source
     }
 }
