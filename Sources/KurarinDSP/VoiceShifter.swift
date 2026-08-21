@@ -29,14 +29,28 @@ import Foundation
 /// grain overlap-add replaced it: on noise the two are perceptually equivalent,
 /// while overlap-add keeps transients intact and costs no extra latency.)
 public final class VoiceShifter: AudioProcessor {
+    /// Bounds on both ratios.
+    ///
+    /// The maximum is not a free choice: `latencyFrames` is sized from it,
+    /// because a grain read stretched by the formant ratio reaches that much
+    /// further into the input than the mark it is centred on. Raising it here
+    /// without rebuilding the delay budget would have the shifter read audio
+    /// that has not arrived.
+    private static let minimumRatio: Float = 0.5
+    private static let maximumRatio: Float = 2
+
+    private static func bounded(_ ratio: Float) -> Float {
+        min(max(ratio, minimumRatio), maximumRatio)
+    }
+
     /// Output fundamental relative to input. 2 is an octave up.
     public var pitchRatio: Float = 1 {
-        didSet { pitchRatio = min(max(pitchRatio, 0.5), 2) }
+        didSet { pitchRatio = VoiceShifter.bounded(pitchRatio) }
     }
 
     /// Spectral envelope scaling. Above 1 shrinks the apparent vocal tract.
     public var formantRatio: Float = 1 {
-        didSet { formantRatio = min(max(formantRatio, 0.5), 2) }
+        didSet { formantRatio = VoiceShifter.bounded(formantRatio) }
     }
 
     public let sampleRate: Float
@@ -46,8 +60,6 @@ public final class VoiceShifter: AudioProcessor {
     /// changing it mid-stream would drop or repeat audio, so the owner
     /// rebuilds the shifter when the user picks a different mode.
     public let latencyFrames: Int
-
-    private static let maximumFormantRatio: Float = 2
 
     private let minimumPeriod: Float
     private let maximumPeriod: Float
@@ -105,7 +117,7 @@ public final class VoiceShifter: AudioProcessor {
         // the output, and reading it stretched by the formant ratio reaches
         // `period × ratio` forward in the input. Both have to be in hand before
         // a sample can be emitted.
-        latencyFrames = Int((maximumPeriod * (1 + VoiceShifter.maximumFormantRatio)).rounded(.up))
+        latencyFrames = Int((maximumPeriod * (1 + VoiceShifter.maximumRatio)).rounded(.up))
 
         var size = 1
         while size < (latencyFrames * 4 + 8192) { size <<= 1 }
@@ -206,9 +218,18 @@ public final class VoiceShifter: AudioProcessor {
         }
     }
 
+    /// Lays down grains until the input runs out.
+    ///
+    /// One turn of the loop places one output grain: pick the period, walk the
+    /// analysis marks up to the synthesis clock, check the audio it wants to
+    /// read has arrived, and emit. The synthesis clock is what the caller
+    /// controls through `pitchRatio`; everything else follows it.
     private func generateGrains() {
-        let formant = min(max(formantRatio, 0.5), VoiceShifter.maximumFormantRatio)
-        let pitch = min(max(pitchRatio, 0.5), 2)
+        // Both setters bound their property, so no clamp is needed here — but
+        // hoisting them out of the loop keeps one grain from being laid down
+        // with a ratio the next one does not share.
+        let formant = formantRatio
+        let pitch = pitchRatio
 
         while true {
             let voiced = stableVoiced
@@ -217,62 +238,17 @@ public final class VoiceShifter: AudioProcessor {
                 : unvoicedGrain
             let advance = voiced ? Double(period / pitch) : Double(period)
 
-            // Follow the synthesis timeline with the analysis marks. When the
-            // synthesis spacing is shorter than a period the same analysis mark
-            // serves several grains, which is exactly how PSOLA raises pitch
-            // without stretching time.
-            var advancedAnalysis = false
-            while analysisPosition + Double(period) < synthesisPosition {
-                advancedAnalysis = true
-                analysisPosition += Double(period)
-                if voiced {
-                    let target = refineToGlottalPulse(near: analysisPosition, period: period)
-                    // Ease towards the detected pulse instead of jumping onto
-                    // it. Snapping outright reintroduces the very jitter the
-                    // refinement exists to remove, because the peak estimate
-                    // carries its own small error that tracks the fractional
-                    // part of the period. A partial correction still bounds the
-                    // drift but leaves no periodic residue to modulate the
-                    // output.
-                    analysisPosition += (target - analysisPosition) * 0.25
-                }
-            }
-            if analysisPosition > synthesisPosition {
-                analysisPosition = synthesisPosition
-            }
+            let advancedAnalysis = advanceAnalysisMarks(period: period, voiced: voiced)
 
+            // Both ends of the grain have to be in hand: the mark itself, and
+            // however far past it the formant ratio stretches the read.
             let readReach = analysisPosition + Double(period * formant) + 2
             if readReach >= Double(inputWritten) { break }
 
             reuseCount = advancedAnalysis ? 0 : reuseCount + 1
-
-            // Reading the same audio again is what makes a shifted voice sound
-            // shifted. The harmonics survive repetition — they are periodic, so
-            // one period back is the same waveform — but the breath and the
-            // fricative noise riding on top of them are not, and repeating
-            // those turns aperiodic noise into a buzz locked to the new pitch.
-            // Measured on a breathy vowel raised by half: the noise above three
-            // kilohertz went from a periodicity of 0.01 to 0.27, sitting exactly
-            // on the new fundamental.
-            //
-            // So a repeat is read from a different glottal period instead: whole
-            // periods back, which leaves the harmonic content aligned and gives
-            // the noise a fresh sample of itself.
-            var readOffset = 0.0
-            if voiced && reuseCount > 0 {
-                // Bounded in time rather than in periods. Further back
-                // decorrelates the noise better, but it is also older audio,
-                // and past thirty-odd milliseconds the mouth has moved on —
-                // borrowing from there smears one sound into the next. A deep
-                // voice gets fewer choices, which is the right answer anyway:
-                // its periods are long enough that even one is a different
-                // slice of noise.
-                let maximumBack = max(1, min(8, Int(0.035 * sampleRate / period)))
-                let candidate = Double(period) * Double(1 + Int(nextRandom()) % maximumBack)
-                if analysisPosition - candidate - Double(period) * Double(formant) - 2 > 0 {
-                    readOffset = -candidate
-                }
-            }
+            let readOffset = voiced && reuseCount > 0
+                ? decorrelatingReadOffset(period: period, formant: formant)
+                : 0
 
             layDown(period: period, formant: formant, advance: Float(advance), readOffset: readOffset)
 
@@ -282,6 +258,36 @@ public final class VoiceShifter: AudioProcessor {
             let jitter = 1 + (Double(nextRandom() % 1000) / 1000 - 0.5) * 0.006
             synthesisPosition += advance * jitter
         }
+    }
+
+    /// Walks the analysis marks forward until they have caught up with the
+    /// synthesis clock, and reports whether any ground was covered.
+    ///
+    /// When the synthesis spacing is shorter than a period the marks do not
+    /// move at all and the same analysis mark serves several grains, which is
+    /// exactly how PSOLA raises pitch without stretching time. A `false` here
+    /// is therefore not a failure — it is the caller's signal that the next
+    /// grain repeats audio, and repetition is what needs decorrelating.
+    private func advanceAnalysisMarks(period: Float, voiced: Bool) -> Bool {
+        var advanced = false
+        while analysisPosition + Double(period) < synthesisPosition {
+            advanced = true
+            analysisPosition += Double(period)
+            if voiced {
+                let target = refineToGlottalPulse(near: analysisPosition, period: period)
+                // Ease towards the detected pulse instead of jumping onto it.
+                // Snapping outright reintroduces the very jitter the refinement
+                // exists to remove, because the peak estimate carries its own
+                // small error that tracks the fractional part of the period. A
+                // partial correction still bounds the drift but leaves no
+                // periodic residue to modulate the output.
+                analysisPosition += (target - analysisPosition) * 0.25
+            }
+        }
+        if analysisPosition > synthesisPosition {
+            analysisPosition = synthesisPosition
+        }
+        return advanced
     }
 
     /// Snaps a predicted mark onto the nearest glottal pulse.
@@ -329,12 +335,37 @@ public final class VoiceShifter: AudioProcessor {
         return Double(index) + Double(subSample)
     }
 
-    private func nextRandom() -> UInt64 {
-        random = random &* 6364136223846793005 &+ 1442695040888963407
-        return random >> 33
+    /// How far back to read a grain that repeats audio already used.
+    ///
+    /// Reading the same audio again is what makes a shifted voice sound
+    /// shifted. The harmonics survive repetition — they are periodic, so one
+    /// period back is the same waveform — but the breath and the fricative
+    /// noise riding on top of them are not, and repeating those turns aperiodic
+    /// noise into a buzz locked to the new pitch. Measured on a breathy vowel
+    /// raised by half: the noise above three kilohertz went from a periodicity
+    /// of 0.01 to 0.27, sitting exactly on the new fundamental.
+    ///
+    /// So a repeat is read from a different glottal period instead: whole
+    /// periods back, which leaves the harmonic content aligned and gives the
+    /// noise a fresh sample of itself. Returns zero when there is not enough
+    /// history to reach that far.
+    private func decorrelatingReadOffset(period: Float, formant: Float) -> Double {
+        // Bounded in time rather than in periods. Further back decorrelates the
+        // noise better, but it is also older audio, and past thirty-odd
+        // milliseconds the mouth has moved on — borrowing from there smears one
+        // sound into the next. A deep voice gets fewer choices, which is the
+        // right answer anyway: its periods are long enough that even one is a
+        // different slice of noise.
+        let maximumBack = max(1, min(8, Int(0.035 * sampleRate / period)))
+        let candidate = Double(period) * Double(1 + Int(nextRandom()) % maximumBack)
+        let earliestRead = analysisPosition - candidate - Double(period) * Double(formant) - 2
+        guard earliestRead > 0 else { return 0 }
+        return -candidate
     }
 
-    private func layDown(period: Float, formant: Float, advance: Float, readOffset: Double = 0) {
+    /// Windows one grain out of the input and accumulates it into the output
+    /// ring at the current synthesis mark.
+    private func layDown(period: Float, formant: Float, advance: Float, readOffset: Double) {
         let halfOutput = Int(period)
         guard halfOutput > 1 else { return }
 
@@ -348,35 +379,43 @@ public final class VoiceShifter: AudioProcessor {
         // buzz under the voice. Folding the remainder into the read position
         // moves the correction into the interpolator, where it costs nothing.
         let fractional = Float(synthesisPosition - Double(synthesisCentre))
+        // Hoisted: a divide per sample is not worth paying inside the loop.
         let windowScale = Float(VoiceShifter.windowTableSize - 1) / Float(2 * halfOutput)
 
         inputRing.withUnsafeBufferPointer { input in
             outputRing.withUnsafeMutableBufferPointer { output in
                 guard let source = input.baseAddress, let destination = output.baseAddress else { return }
 
-                for j in -halfOutput...halfOutput {
-                    let outputIndex = synthesisCentre + j
+                for grainSample in -halfOutput...halfOutput {
+                    let outputIndex = synthesisCentre + grainSample
                     if outputIndex < outputRead { continue }
 
-                    let offsetFromCentre = Float(j) - fractional
+                    let offsetFromCentre = Float(grainSample) - fractional
                     let windowPosition = min(
                         max((offsetFromCentre + Float(halfOutput)) * windowScale, 0),
                         Float(VoiceShifter.windowTableSize - 1)
                     )
-                    let windowIndex = Int(windowPosition)
-                    let windowFraction = windowPosition - Float(windowIndex)
-                    let w = windowIndex + 1 < VoiceShifter.windowTableSize
-                        ? windowTable[windowIndex] + (windowTable[windowIndex + 1] - windowTable[windowIndex]) * windowFraction
-                        : windowTable[VoiceShifter.windowTableSize - 1]
+                    let weight = windowValue(at: windowPosition)
 
                     let sourcePosition = analysisPosition + readOffset
                         + Double(offsetFromCentre) * Double(formant)
                     let sample = interpolate(source, at: sourcePosition)
 
-                    destination[outputIndex & ringMask] += sample * w * gain
+                    destination[outputIndex & ringMask] += sample * weight * gain
                 }
             }
         }
+    }
+
+    /// Reads the shared Hann table at a fractional position, which the caller
+    /// has already scaled and bounded to the table.
+    private func windowValue(at position: Float) -> Float {
+        let index = Int(position)
+        guard index + 1 < VoiceShifter.windowTableSize else {
+            return windowTable[VoiceShifter.windowTableSize - 1]
+        }
+        let fraction = position - Float(index)
+        return windowTable[index] + (windowTable[index + 1] - windowTable[index]) * fraction
     }
 
     /// Catmull-Rom interpolation. Linear interpolation acts as a lowpass that
@@ -407,5 +446,10 @@ public final class VoiceShifter: AudioProcessor {
             outputRing[index] = 0
         }
         outputRead += frameCount
+    }
+
+    private func nextRandom() -> UInt64 {
+        random = random &* 6364136223846793005 &+ 1442695040888963407
+        return random >> 33
     }
 }
