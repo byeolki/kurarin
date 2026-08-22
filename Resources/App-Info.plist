@@ -20,6 +20,14 @@
 	<string>1</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>14.2</string>
+	<!-- The menu bar is the whole interface. Without this the app also takes a
+	     Dock icon it has no use for: there is nothing to click it for that the
+	     menu bar item does not already do, and a voice changer is something you
+	     leave running behind a game rather than switch to. Quit and Settings
+	     both live in the menu, and the window activates the app itself when it
+	     opens, which is what an agent app has to do to come to the front. -->
+	<key>LSUIElement</key>
+	<true/>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSMicrophoneUsageDescription</key>
