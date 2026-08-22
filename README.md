@@ -1,5 +1,9 @@
 # Kurarin
 
+[![CI](https://github.com/byeolki/kurarin/actions/workflows/ci.yml/badge.svg)](https://github.com/byeolki/kurarin/actions/workflows/ci.yml)
+[![Platform](https://img.shields.io/badge/platform-macOS%2014.2%2B-lightgrey)](#requirements)
+[![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+
 A real-time voice changer for macOS.
 
 Kurarin transforms your microphone, mixes in soundboard samples and system
@@ -7,15 +11,29 @@ audio, and publishes the result as a virtual microphone that any application —
 Discord, Roblox, OBS, Zoom — can select like any other input device.
 
 ```
-microphone ──▶ noise gate ──▶ pitch / formant shift ──▶ EQ ──▶ drive ──▶ reverb ──┐
-                                                                                  ├─▶ limiter ─┬─▶ Kurarin Microphone ─▶ Discord / Roblox / OBS
-soundboard ───────────────────────────────────────────────────────────────────────┤            │
-system audio ─────────────────────────────────────────────────────────────────────┘            └─▶ your headphones
+                clean                       change who it is              shape
+             ┌───────────────────────┐   ┌──────────────────────┐   ┌──────────────┐
+microphone ─▶│ clicks · hum · hiss   │──▶│ ≤5 kHz  PSOLA shift  │──▶│ formants     │──┐
+             │ gate · rumble         │   │ >5 kHz  rebuilt air  │   │ breath·EQ    │  │
+             └───────────────────────┘   └──────────────────────┘   │ drive·reverb │  │
+                        ▲                            ▲              └──────────────┘  │
+                        └────── pitch tracker ───────┘                                │
+                            one verdict, shared                                       │
+                                                                                      ├─▶ limiter ─┬─▶ Kurarin Microphone ─▶ Discord / Roblox / OBS
+soundboard ───────────────────────────────────────────────────────────────────────────┤            │
+system audio ─────────────────────────────────────────────────────────────────────────┘            └─▶ your headphones
 ```
 
-> **Status:** feature complete, not yet verified end to end on a machine with
-> the driver installed. See [docs/manual-testing.md](docs/manual-testing.md) (Korean) for
-> the checklist that has to pass before this is called stable.
+One pitch tracker feeds the whole left-hand side. The gate uses it to know a
+held note is still a note, the click suppressor uses it to know a vowel is not a
+keystroke, and the shifter uses it to place its grains — all from the same
+verdict on the same samples.
+
+> **Status:** feature complete. The driver installs and registers, the app runs,
+> and 195 automated tests cover the DSP — including a check that nothing on the
+> audio thread touches the heap. What has not been signed off is how it
+> *sounds*: that needs a person and a pair of headphones, and the checklist is
+> [docs/manual-testing.md](docs/manual-testing.md) (Korean).
 
 ## What it does
 
@@ -46,7 +64,10 @@ system audio ──────────────────────�
 - **Presets that aim at a pitch.** "Sound like a woman" is 200 Hz, not a
   multiplier: a ratio that suits a deep voice overshoots a light one. Kurarin
   measures where your voice normally sits and works out the rest, slowly enough
-  that your intonation survives.
+  that your intonation survives. The shift is bounded to an octave either way,
+  because past that the grain repetition stops sounding like a person — so a
+  deep voice aimed at the top of the range lands short, and the interface says
+  so rather than leaving you wondering.
 - **Latency you choose.** 36, 46 or 56 ms end to end, trading the lowest
   fundamental the pitch tracker can follow against delay.
 
@@ -77,7 +98,7 @@ Other targets:
 ```sh
 make driver     # virtual audio device only
 make app        # application only
-make test       # DSP, preset and soundboard test suites
+make test       # every suite, plus the release-only real-time checks
 make clean
 ```
 
@@ -100,7 +121,9 @@ The app itself needs no installation — it runs from `build/`, or drag it to
    microphone while running* on and it will follow along. Your previous default
    is restored when you stop.
 4. **Voice** — pick a preset, or move pitch and formant yourself and save your
-   own. Presets are plain JSON in
+   own. With *Aim for a pitch* on, the line under the slider tells you what it
+   has measured your voice at and where it is actually landing, which will not
+   be the target if that is more than an octave away. Presets are plain JSON in
    `~/Library/Application Support/Kurarin/presets`.
 5. **Soundboard** — drop audio files onto the tiles, set a volume, bind a key.
 6. **Shortcuts** — click a binding and press the combination you want. These
@@ -146,6 +169,23 @@ The DSP is where automated tests are meaningful: synthetic signals go in,
 measured pitch, level and stability come out. Routing and the driver need
 hardware and a person, and are covered by
 [docs/manual-testing.md](docs/manual-testing.md) (Korean) instead.
+
+Two things are worth knowing about how the suite is kept honest.
+
+**The no-allocation rule is checked, not trusted.** A counter on Darwin's
+`malloc_logger` runs the whole chain, every unit, the mixer and the channel
+router and asserts none of them touch the heap. It needs the optimiser — a debug
+build allocates once per loop iteration for bookkeeping release removes — so
+`make test` runs it as a separate release step, and it skips itself with an
+explanation if you invoke it the other way.
+
+**The tests are mutation-checked.** Every claim the DSP comments make about why
+a design choice exists has been broken on purpose to see whether anything
+notices. The first sweep found half of them unguarded, including the two
+concessions to voicing that stop the click suppressor eating a held vowel. Three
+claims did not survive the measurement they implied and the comments now say so.
+If you add a test here, break the thing it covers and watch it fail before you
+trust it.
 
 ## Contributing
 

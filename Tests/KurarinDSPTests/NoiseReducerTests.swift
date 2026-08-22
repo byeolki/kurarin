@@ -202,8 +202,14 @@ final class NoiseReducerTests: XCTestCase {
     /// a signal from thinning it, and it had nothing holding it in place.
     ///
     /// Measured where the two diverge most — a tone only a little above the
-    /// floor. Subtracting the estimate from the amplitude instead costs 6.7 dB
-    /// here against 2.9; forgetting the square root alone costs 3.8.
+    /// floor. The tone loses 2.39 dB as it stands; subtracting the estimate
+    /// from the amplitude instead costs 6.16 dB, and forgetting the square root
+    /// alone costs 3.24. The bound sits under the nearer of those two.
+    ///
+    /// These numbers moved once already, when the neighbour averaging came out
+    /// and every one of them dropped by half a decibel. If they move again,
+    /// re-measure all three rather than nudging the bound — a threshold that no
+    /// longer sits between them catches nothing.
     func testSpeechIsNotThinnedOutAlongWithTheNoise() {
         let (signal, half) = toneOverNoise(toneAmplitude: 0.05, noiseAmplitude: 0.05)
         let output = reduce(signal, strength: 0.7, voicedFrom: half)
@@ -213,7 +219,7 @@ final class NoiseReducerTests: XCTestCase {
         let after = level(Array(output[window]), from: 900, to: 1200)
         let lost = -20 * log10f(after / before)
 
-        XCTAssertLessThan(lost, 3.4, "the signal was thinned, not cleaned: lost \(lost) dB")
+        XCTAssertLessThan(lost, 2.9, "the signal was thinned, not cleaned: lost \(lost) dB")
         XCTAssertGreaterThan(lost, 0, "nothing happened at all, so this proves nothing")
     }
 
