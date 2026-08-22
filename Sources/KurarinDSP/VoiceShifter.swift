@@ -257,13 +257,10 @@ public final class VoiceShifter: AudioProcessor {
             // that variation is heard as synthetic however good the spectrum
             // is.
             //
-            // Deliberately left untested. The effect is there and behaves as
-            // jitter should — over a long lag it accumulates, so the output's
-            // own autocorrelation peak falls from 0.9609 without it to 0.9566
-            // with — but 0.4% is too thin a margin to hang a regression test
-            // on; a threshold in that gap would fire on changes that have
-            // nothing to do with it. The perceptual claim above is not
-            // something these tests can reach either way.
+            // Measured a long way out, because it is a random walk and ±0.3%
+            // shows only once it has accumulated: a hundred and forty periods
+            // along, the output correlates with itself at 0.932 with this and
+            // 0.970 without. Nearer than that the two are indistinguishable.
             let jitter = 1 + (Double(nextRandom() % 1000) / 1000 - 0.5) * 0.006
             synthesisPosition += advance * jitter
         }
@@ -388,12 +385,13 @@ public final class VoiceShifter: AudioProcessor {
         // into the read position moves the correction into the interpolator,
         // where it costs nothing.
         //
-        // This is kept for being free and strictly more correct, not for a
-        // measured gain. It used to claim the rounding showed up as a low buzz
-        // under the voice; removing the correction changes every sample, but
-        // level, envelope variation and energy below 80 Hz all come back
-        // identical to five significant figures, so whatever it is worth is
-        // below what these measurements can see.
+        // It used to claim the rounding showed up as a low buzz under the
+        // voice, which is more than can be shown: level, energy below 80 Hz
+        // and envelope variation at most pitches come back identical either
+        // way. What it does do is visible only where the shifter is otherwise
+        // cleanest — at 200 and 300 Hz doubled, where the advance is nearly a
+        // whole number of samples and this is the largest thing left in the
+        // residual wobble.
         let fractional = Float(synthesisPosition - Double(synthesisCentre))
         // Hoisted: a divide per sample is not worth paying inside the loop.
         let windowScale = Float(VoiceShifter.windowTableSize - 1) / Float(2 * halfOutput)

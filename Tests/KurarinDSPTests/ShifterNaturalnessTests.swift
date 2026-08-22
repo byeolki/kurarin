@@ -201,4 +201,101 @@ final class ShifterNaturalnessTests: XCTestCase {
             "the output lost level over a steady vowel: \(20 * log10f(held)) dB"
         )
     }
+
+    /// Real voices are not metronomes, and PSOLA is one unless it is told not
+    /// to be: every synthesis mark lands exactly one advance after the last,
+    /// so the output repeats itself perfectly for as long as the note is held.
+    ///
+    /// The jitter is only ±0.3% of a period, which is why this has to be
+    /// measured a long way out. It is a random walk, so the disagreement
+    /// accumulates: a hundred and forty periods along, the output's own
+    /// autocorrelation is 0.932 with the jitter and 0.970 without it. At a
+    /// fifth of that distance the two are 0.961 and 0.965 and nothing can be
+    /// concluded, which is what a first attempt at this test measured.
+    func testAHeldNoteDoesNotRepeatItselfExactly() {
+        var input = [Float](repeating: 0, count: 400000)
+        for harmonic in 1...8 {
+            let partial = Signal.sine(
+                frequency: 120 * Float(harmonic),
+                frames: 400000,
+                amplitude: 0.3 / Float(harmonic)
+            )
+            for i in input.indices { input[i] += partial[i] }
+        }
+
+        let shifter = VoiceShifter(sampleRate: Signal.sampleRate, latencyMode: .balanced)
+        shifter.pitchRatio = 1.4
+        shifter.formantRatio = 1
+
+        let output = Array(processStreaming(shifter, input)[96000...])
+        // A 120 Hz voice raised by 1.4 repeats every 285.7 samples, so the
+        // hundred-and-fortieth repeat lands on 40000. Searching a narrow window
+        // around it rather than a wide range keeps this test from costing half
+        // a minute on its own.
+        let repeated = periodicity(output, lags: 39900...40100)
+
+        XCTAssertLessThan(
+            repeated, 0.95,
+            "the output repeats like a metronome nearly a second out: \(repeated)"
+        )
+        // Still a voice holding a note, not noise.
+        XCTAssertGreaterThan(repeated, 0.7, "the output stopped being periodic at all")
+    }
+
+    /// Root mean square per five-millisecond window, expressed as a coefficient
+    /// of variation — how much the output level wobbles over the course of a
+    /// held note.
+    private func envelopeVariation(_ samples: [Float]) -> Float {
+        let window = 240
+        let levels = stride(from: 0, to: samples.count - window, by: window).map {
+            Signal.rms(Array(samples[$0..<($0 + window)]))
+        }
+        let mean = levels.reduce(0, +) / Float(levels.count)
+        guard mean > 0 else { return 0 }
+        let variance = levels.map { ($0 - mean) * ($0 - mean) }.reduce(0, +) / Float(levels.count)
+        return sqrtf(variance) / mean
+    }
+
+    /// How steady the output is at the ratios where the shifter is cleanest.
+    ///
+    /// A synthesis mark almost never lands on a whole sample. `layDown` folds
+    /// the remainder into the read position rather than rounding it away, so
+    /// the grain is read from where the mark actually is. This is the only
+    /// measurement that has been found to notice, and it only notices here:
+    /// at 200 and 300 Hz doubled, the advance comes out very close to a whole
+    /// number of samples and the residual wobble is a twentieth of what it is
+    /// at neighbouring pitches, which leaves the rounding as the largest thing
+    /// left in it. Round the mark instead and the two rise from 0.0029 and
+    /// 0.0033 to 0.0035 and 0.0039.
+    ///
+    /// Everywhere else the difference disappears into effects an order of
+    /// magnitude larger, which is why this is a bound on the two rather than a
+    /// sweep. Level, envelope at other resolutions and energy below 80 Hz all
+    /// come back identical either way.
+    func testTheOutputIsSteadyWhereTheShifterIsCleanest() {
+        var total: Float = 0
+
+        for f0 in [Float(200), 300] {
+            var input = [Float](repeating: 0, count: 200000)
+            for harmonic in 1...8 {
+                let partial = Signal.sine(
+                    frequency: f0 * Float(harmonic),
+                    frames: 200000,
+                    amplitude: 0.3 / Float(harmonic)
+                )
+                for i in input.indices { input[i] += partial[i] }
+            }
+
+            let shifter = VoiceShifter(sampleRate: Signal.sampleRate, latencyMode: .balanced)
+            shifter.pitchRatio = 2
+            shifter.formantRatio = 2
+
+            total += envelopeVariation(Array(processStreaming(shifter, input)[96000...]))
+        }
+
+        XCTAssertLessThan(
+            total, 0.0068,
+            "the output wobbles more than it should at its steadiest ratios: \(total)"
+        )
+    }
 }

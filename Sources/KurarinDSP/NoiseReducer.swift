@@ -50,7 +50,6 @@ public final class NoiseReducer: AudioProcessor {
     /// choice of buffer stops changing how much noise comes out.
     private var levels: [Float]
     private var noiseFloors: [Float]
-    private var gains: [Float]
     private var smoothed: [Float]
     /// Counted in samples, not in callbacks: the host picks the block size.
     private var warmUpBlocks: [Int]
@@ -61,7 +60,6 @@ public final class NoiseReducer: AudioProcessor {
 
         levels = [Float](repeating: 0, count: bank.bandCount)
         noiseFloors = [Float](repeating: 0, count: bank.bandCount)
-        gains = [Float](repeating: 1, count: bank.bandCount)
         smoothed = [Float](repeating: 1, count: bank.bandCount)
         warmUpBlocks = [Int](repeating: 0, count: bank.bandCount)
     }
@@ -71,7 +69,6 @@ public final class NoiseReducer: AudioProcessor {
         for i in noiseFloors.indices {
             levels[i] = 0
             noiseFloors[i] = 0
-            gains[i] = 1
             smoothed[i] = 1
             warmUpBlocks[i] = 0
         }
@@ -129,12 +126,11 @@ public final class NoiseReducer: AudioProcessor {
 
         guard warmUpBlocks[index] >= settings.warmUpSamples, level > 0 else {
             smoothed[index] = 1
-            gains[index] = 1
             return 1
         }
 
         let target = subtractionGain(level: level, floor: floor, settings)
-        return blendWithNeighbours(smooth(target, band: index, elapsed: elapsed), band: index)
+        return smooth(target, band: index, elapsed: elapsed)
     }
 
     /// Returns the level before denormal flushing, which is what the rest of
@@ -185,6 +181,29 @@ public final class NoiseReducer: AudioProcessor {
         return remaining > 0 ? max(sqrtf(remaining), settings.minimumGain) : settings.minimumGain
     }
 
+    /// There was a neighbour-averaging step after this, mixing each band's
+    /// gain with its two neighbours'. It is gone.
+    ///
+    /// Its justification was that the reconstruction sums differences of
+    /// lowpasses — exact while the bands move together, leaving a phase
+    /// residue when one is pulled away from its neighbours — and that the
+    /// residue could push a band above the level it went in at. That last part
+    /// never reproduced: six signal designs meant to force adjacent gains
+    /// apart, including narrow lumps of floor, tones sitting on crossovers and
+    /// noise confined to a single band, and no band ever came back above
+    /// unity, with the averaging or without.
+    ///
+    /// What it did do was measurable: half a decibel more taken off a marginal
+    /// tone, 2.9 dB against 2.4. An unreproducible benefit against a measured
+    /// cost to the speech this is supposed to protect is not a trade worth
+    /// keeping, and the coupling made the per-band logic harder to follow.
+    ///
+    /// No test replaced it. Every attempt was vacuous — on any signal strong
+    /// enough to drive the gains apart they sit near the minimum, so even
+    /// multiplying every band by 2.5 stays far below unity and the check
+    /// passes whatever the code does. The concern above is still sound in
+    /// theory; it simply could not be provoked.
+
     /// Opening fast and closing slowly: the quick one belongs to the direction
     /// that gives the signal back, because a word starts in a couple of
     /// milliseconds and a reducer that takes eighty to get out of the way
@@ -194,32 +213,7 @@ public final class NoiseReducer: AudioProcessor {
         let rate = target > gain ? coefficient(0.005, elapsed) : coefficient(0.040, elapsed)
         gain += (target - gain) * rate
         smoothed[index] = withoutDenormals(gain)
-        gains[index] = gain
         return gain
-    }
-
-    /// Averages in the band below's gain from this chunk and the band above's
-    /// from the last one.
-    ///
-    /// The reconstruction sums differences of lowpasses, which is exact when
-    /// the bands move together and leaves a phase residue when one band is
-    /// pulled away from its neighbours. A noise floor is broadband, so the
-    /// gains want to move together anyway; this keeps them from drifting apart
-    /// on a signal that is not.
-    ///
-    /// This carried a stronger claim — that the residue was enough to make a
-    /// tone come back louder than it went in — which does not survive being
-    /// measured. Three attempts to force adjacent gains apart (a tone against
-    /// a broadband floor, a tone alone in a quiet band, and noise confined to
-    /// one crossover with a tone in the next) never produced a band above
-    /// unity, with the averaging or without it. What the averaging does do is
-    /// take slightly more off a marginal tone, 2.9 dB against 2.4. It is kept
-    /// because it is nearly free and the reasoning above still holds, not
-    /// because a failure was reproduced.
-    private func blendWithNeighbours(_ gain: Float, band index: Int) -> Float {
-        let below = index > 0 ? gains[index - 1] : gain
-        let above = index + 1 < smoothed.count ? smoothed[index + 1] : gain
-        return (below + 2 * gain + above) * 0.25
     }
 
     private func coefficient(_ seconds: Float, _ elapsed: Float) -> Float {
