@@ -181,11 +181,15 @@ explanation if you invoke it the other way.
 
 **The tests are mutation-checked.** Every claim the DSP comments make about why
 a design choice exists has been broken on purpose to see whether anything
-notices. The first sweep found half of them unguarded, including the two
-concessions to voicing that stop the click suppressor eating a held vowel. Three
-claims did not survive the measurement they implied and the comments now say so.
+notices. The first sweep found half of them unguarded, including both
+concessions to voicing that stop the click suppressor eating a held vowel. Two
+claims turned out not to survive the measurement they implied — the comments now
+say what was established and what was not — and one piece of code was removed
+outright when its stated benefit could not be reproduced but its cost could.
+
 If you add a test here, break the thing it covers and watch it fail before you
-trust it.
+trust it. Several tests in this repository were green and worthless until
+someone did.
 
 ## Contributing
 
