@@ -64,6 +64,22 @@ public final class KurarinEngine {
     /// move in a different order each time, which is an artefact of sampling
     /// two fast-moving values at a slower rate.
     public private(set) var inputLevel: Float = 0
+
+    /// Samples that arrived already at full scale, counted before any gain of
+    /// ours is applied.
+    ///
+    /// Nothing downstream can undo this. A converter that ran out of range has
+    /// flattened the tops off the waveform, and every stage after it — the
+    /// shifter most of all, which repeats a period several times over — works
+    /// with what is left and makes the damage more obvious rather than less.
+    /// The only useful response is to tell whoever is speaking to turn the
+    /// microphone's own gain down, and they cannot know to unless somebody
+    /// says so.
+    ///
+    /// Written by the audio thread and read by the interface; a plain
+    /// word-sized store, and a count that is one block stale says the same
+    /// thing.
+    public private(set) var clippedInputSamples = 0
     public private(set) var outputLevel: Float = 0
 
     /// Reads both meters and starts a fresh hold. Main thread only.
@@ -267,10 +283,20 @@ public final class KurarinEngine {
         isRunning = false
         inputLevel = 0
         outputLevel = 0
+        clippedInputSamples = 0
         soundboard.collectRetiredBuffers()
     }
 
     // MARK: - Render
+
+    /// Full scale rather than a threshold under it: a converter at its limit
+    /// returns exactly ±1, and anything quieter is a signal that still has its
+    /// shape.
+    private func countClipping(in buffer: UnsafeMutablePointer<Float>, frames: Int) {
+        var count = 0
+        for i in 0..<frames where abs(buffer[i]) >= 0.999 { count += 1 }
+        clippedInputSamples += count
+    }
 
     private func render(
         input: UnsafePointer<AudioBufferList>?,
@@ -323,6 +349,10 @@ public final class KurarinEngine {
                 )
             }
         }
+
+        // Before the trim, because this is a question about what the
+        // microphone delivered rather than about what we did with it.
+        countClipping(in: voiceBuffer, frames: frames)
 
         // Trim first, so the meter shows what the rest of the chain is working
         // with — including the gate, which is the thing most likely to be

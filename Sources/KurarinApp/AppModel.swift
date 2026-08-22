@@ -394,7 +394,10 @@ final class AppModel: ObservableObject {
     }
 
     private func pollMeters() {
-        guard isRunning else { return }
+        guard isRunning else {
+            if isInputClipping { isInputClipping = false }
+            return
+        }
 
         let levels = engine.drainLevels()
         // Ballistics: jump to a new peak, fall back gently. An instantaneous
@@ -404,6 +407,8 @@ final class AppModel: ObservableObject {
         inputLevel = max(levels.input, inputLevel * AppModel.meterFall)
         outputLevel = max(levels.output, outputLevel * AppModel.meterFall)
         inputPeak = max(levels.input, inputPeak * AppModel.peakFall)
+
+        updateClippingWarning()
 
         if calibrationRemaining > 0 {
             calibrationPeak = max(calibrationPeak, levels.input)
@@ -720,6 +725,34 @@ final class AppModel: ObservableObject {
             format: "Hearing you around %.0f Hz. %.0f Hz is more than an octave away, so it lands at %.0f Hz.",
             heard, target, landing
         )
+    }
+
+    /// Whether the microphone is arriving already clipped.
+    ///
+    /// This is the one fault in the signal path that gets worse the harder the
+    /// rest of the app works: the shifter lays each glottal period down several
+    /// times over, so a flattened waveform is repeated rather than averaged
+    /// away, and a voice that merely sounded loud going in comes out sounding
+    /// broken. No gain of ours can put back what the converter threw away.
+    @Published private(set) var isInputClipping = false
+
+    private var lastClippedCount = 0
+    private var clippingHoldTicks = 0
+
+    /// Held for a couple of seconds after the last clipped sample, because
+    /// clipping happens on syllables and a warning that blinks at syllable rate
+    /// is unreadable.
+    private func updateClippingWarning() {
+        let count = engine.clippedInputSamples
+        if count > lastClippedCount {
+            clippingHoldTicks = 60
+        } else if clippingHoldTicks > 0 {
+            clippingHoldTicks -= 1
+        }
+        lastClippedCount = count
+
+        let clipping = clippingHoldTicks > 0
+        if clipping != isInputClipping { isInputClipping = clipping }
     }
 
     /// The shortcut printed on a soundboard tile, if the slot has one.

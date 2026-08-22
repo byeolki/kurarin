@@ -62,6 +62,18 @@ struct DevicesTab: View {
                     Text("Talk normally and land the bar in the green. Many USB microphones have no software volume, so this is the only place to correct a quiet one.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+
+                    // The slider above cannot fix this, which is the whole
+                    // reason for saying it out loud: the damage is done before
+                    // the audio reaches us.
+                    if model.isInputClipping {
+                        Label(
+                            "Your microphone is clipping. Turn its own gain down — in its hardware knob or in System Settings ▸ Sound ▸ Input. The slider here is applied afterwards and cannot undo it.",
+                            systemImage: "exclamationmark.triangle.fill"
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                    }
                 }
             }
 
