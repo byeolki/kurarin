@@ -688,6 +688,40 @@ final class AppModel: ObservableObject {
             : "No hum found — nothing is being removed."
     }
 
+    /// What the pitch target is actually doing, or nil when there is nothing
+    /// to report.
+    ///
+    /// Same reasoning as `humDescription`, and more pressing here. This
+    /// control works by learning where the speaker's voice rests, which takes
+    /// a couple of seconds of speech before it does anything at all — so
+    /// somebody who switches it on and hears nothing change has no way to tell
+    /// waiting from broken.
+    ///
+    /// It also cannot always do what it is asked. The shifter is bounded to an
+    /// octave either way, so a deep voice aimed at the top of the range lands
+    /// short, and silently landing short is the worst of the three outcomes to
+    /// leave unexplained.
+    var pitchDescription: String? {
+        let target = editedParameters.targetPitchHz
+        guard target > 0, isRunning, isEffectEnabled else { return nil }
+
+        let heard = engine.chain.detectedPitchHz
+        guard heard > 0 else { return "Listening — say a few words and it will find your voice." }
+
+        // Derived from what was heard rather than read back from the shifter:
+        // the chain sets the speaker's pitch on the first voiced block and the
+        // ratio only on the next one, so reading the ratio there would claim
+        // the target was out of range for as long as that gap lasts.
+        let landing = VoiceChain.landingPitch(heard: heard, target: target)
+        guard abs(landing - target) > 2 else {
+            return String(format: "Hearing you around %.0f Hz, landing on %.0f Hz.", heard, landing)
+        }
+        return String(
+            format: "Hearing you around %.0f Hz. %.0f Hz is more than an octave away, so it lands at %.0f Hz.",
+            heard, target, landing
+        )
+    }
+
     /// The shortcut printed on a soundboard tile, if the slot has one.
     func shortcutName(forSlot index: Int) -> String? {
         guard let action = HotKeyManager.Action(rawValue: "playSlot\(index)") else { return nil }

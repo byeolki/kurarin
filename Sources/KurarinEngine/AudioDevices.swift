@@ -328,8 +328,4 @@ public enum AudioDevices {
             )
         }
     }
-
-    public static func nominalSampleRate(of device: AudioObjectID) -> Double {
-        Double(value(of: device, address(kAudioDevicePropertyNominalSampleRate), default: Float64(48000)))
-    }
 }

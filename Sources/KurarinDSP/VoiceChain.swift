@@ -156,6 +156,23 @@ public final class VoiceChain: AudioProcessor {
     /// What is wanted is the speaker's resting pitch — a property of the person
     /// that takes seconds to establish and then barely moves — with all of
     /// their expression left riding on top of it.
+    /// The ratio the shifter is given to move a voice heard at `heard` onto
+    /// `target`, bounded the same way the shifter bounds itself.
+    public static func ratio(from heard: Float, to target: Float) -> Float {
+        guard heard > 0 else { return 1 }
+        return min(max(target / heard, VoiceShifter.minimumRatio), VoiceShifter.maximumRatio)
+    }
+
+    /// Where a voice heard at `heard` actually ends up when aimed at `target`.
+    ///
+    /// Not always the target. The shifter is bounded to an octave either way,
+    /// because past that the grain repetition stops sounding like a person, so
+    /// a deep voice aimed at the top of the range lands short. The interface
+    /// needs this to say so rather than let the user wonder.
+    public static func landingPitch(heard: Float, target: Float) -> Float {
+        heard * ratio(from: heard, to: target)
+    }
+
     private func updatePitchRatioForTarget(voiced: Bool, frameCount: Int) {
         let target = parameters.targetPitchHz
         guard target > 0 else { return }
@@ -196,7 +213,7 @@ public final class VoiceChain: AudioProcessor {
         let timeConstant: Float = voicedSeconds < 2 ? 0.4 : 30
         speakerPitchHz += (heard - speakerPitchHz) * min(elapsed / timeConstant, 1)
 
-        shifter.pitchRatio = min(max(target / speakerPitchHz, 0.5), 2)
+        shifter.pitchRatio = VoiceChain.ratio(from: speakerPitchHz, to: target)
     }
 
     /// The speaker's resting pitch, learned while they talk.
@@ -209,9 +226,14 @@ public final class VoiceChain: AudioProcessor {
     /// and one who can see that it was not knows to look elsewhere.
     public var detectedHumHz: Float { humRemover.detectedHz }
 
-    /// What the shifter is currently being asked to do, for the interface to
-    /// show — with a target set it is not the number in the preset.
+    /// What the shifter is currently being asked to do — with a target set it
+    /// is not the number in the preset. Read by the tests to check the target
+    /// converges; the interface works out its own number from `detectedPitchHz`
+    /// instead, because this one is a block behind on the first voiced frame.
     public var effectivePitchRatio: Float { shifter.pitchRatio }
+
+    /// The speaker's resting pitch as measured so far, or zero before enough
+    /// voiced speech has arrived to establish one.
     public var detectedPitchHz: Float { speakerPitchHz }
 
     private func isShifting(_ parameters: VoiceParameters) -> Bool {

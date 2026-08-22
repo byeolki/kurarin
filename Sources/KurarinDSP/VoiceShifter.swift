@@ -36,8 +36,8 @@ public final class VoiceShifter: AudioProcessor {
     /// further into the input than the mark it is centred on. Raising it here
     /// without rebuilding the delay budget would have the shifter read audio
     /// that has not arrived.
-    private static let minimumRatio: Float = 0.5
-    private static let maximumRatio: Float = 2
+    public static let minimumRatio: Float = 0.5
+    public static let maximumRatio: Float = 2
 
     private static func bounded(_ ratio: Float) -> Float {
         min(max(ratio, minimumRatio), maximumRatio)

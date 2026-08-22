@@ -51,8 +51,6 @@ public final class ParametricEQ: AudioProcessor {
         applyBands()
     }
 
-    public var currentBands: [Band] { bands }
-
     private func applyBands() {
         for (index, band) in bands.enumerated() {
             filters[index].configure(

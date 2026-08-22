@@ -47,6 +47,15 @@ struct VoiceTab: View {
                             Text("Lands your voice on this pitch whoever you are, by measuring where it normally sits — a multiplier that suits a deep voice overshoots a light one. Men speak around 110 Hz, women around 200, children around 255.")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
+                            // Added below the explanation rather than replacing
+                            // it, unlike the hum line: the reference pitches
+                            // are what the slider is set against, and they are
+                            // wanted most while it is running.
+                            if let status = model.pitchDescription {
+                                Text(status)
+                                    .font(.caption)
+                                    .foregroundStyle(.tint)
+                            }
                         }
                     }
 
