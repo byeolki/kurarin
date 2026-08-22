@@ -2,6 +2,7 @@ import Foundation
 import CoreAudio
 import os
 import KurarinDSP
+import KurarinRecording
 import KurarinSoundboard
 
 /// Routing problems are invisible from the interface: a wrong channel offset
@@ -64,6 +65,14 @@ public final class KurarinEngine {
     /// move in a different order each time, which is an artefact of sampling
     /// two fast-moving values at a slower rate.
     public private(set) var inputLevel: Float = 0
+
+    /// Where the finished mix is copied while a recording is running.
+    ///
+    /// Set and cleared from the main thread, read by the audio thread. A plain
+    /// reference store: the worst a race can do is include or miss one block at
+    /// the very start or end of a recording, and neither is worth a lock on
+    /// this thread.
+    public var recordingSink: SampleRing?
 
     /// Samples that arrived already at full scale, counted before any gain of
     /// ours is applied.
@@ -386,6 +395,14 @@ public final class KurarinEngine {
         }
         limiter.process(mixBuffer, frameCount: frames)
         outputLevel = max(outputLevel, peak(mixBuffer, frames: frames))
+
+        // After the limiter, because a recording should hold what the listeners
+        // were sent rather than a louder version of it. The ring is the only
+        // thing this thread touches: a bounded copy, and the file writing
+        // happens somewhere else entirely.
+        if let recording = recordingSink {
+            recording.write(mixBuffer, count: frames)
+        }
 
         ChannelRouter.write(
             mixBuffer,

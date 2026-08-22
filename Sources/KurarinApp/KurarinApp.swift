@@ -69,8 +69,11 @@ struct StatusBar: View {
             Spacer()
 
             if let message = model.statusMessage {
-                Label(message, systemImage: "exclamationmark.triangle")
-                    .foregroundStyle(.orange)
+                Label(
+                    message,
+                    systemImage: model.statusIsWarning ? "exclamationmark.triangle" : "checkmark.circle"
+                )
+                    .foregroundStyle(model.statusIsWarning ? .orange : .secondary)
                     .lineLimit(2)
                     .font(.caption)
             } else if model.isRunning {

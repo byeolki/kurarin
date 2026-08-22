@@ -35,6 +35,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         // whether it is running, and whether it is muted.
         model.$isRunning.sink { [weak self] _ in self?.scheduleIconUpdate() }.store(in: &observers)
         model.$isMuted.sink { [weak self] _ in self?.scheduleIconUpdate() }.store(in: &observers)
+        model.$isRecording.sink { [weak self] _ in self?.scheduleIconUpdate() }.store(in: &observers)
     }
 
     private func scheduleIconUpdate() {
@@ -44,9 +45,13 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     }
 
     private func updateIcon() {
-        let name = model.isRunning
-            ? (model.isMuted ? "mic.slash.fill" : "waveform")
-            : "waveform.slash"
+        // Recording wins over everything else the icon could say. Leaving a
+        // recording running by accident is the expensive mistake here.
+        let name = model.isRecording
+            ? "record.circle"
+            : model.isRunning
+                ? (model.isMuted ? "mic.slash.fill" : "waveform")
+                : "waveform.slash"
         item.button?.image = NSImage(systemSymbolName: name, accessibilityDescription: "Kurarin")
     }
 
@@ -92,12 +97,16 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     // MARK: - Menu
 
     private func showMenu() {
-        let menu = buildMenu()
-        item.menu = menu
-        item.button?.performClick(nil)
-        // Handing the menu over permanently would make the next left click open
-        // it too, which is the behaviour this class exists to avoid.
-        item.menu = nil
+        guard let button = item.button else { return }
+        // Popped up directly rather than by handing the menu to the status item
+        // and clicking it again. Assigning `item.menu` makes every click open
+        // the menu, which is the behaviour this class exists to avoid, and
+        // calling performClick from inside the button's own action re-enters it.
+        buildMenu().popUp(
+            positioning: nil,
+            at: NSPoint(x: 0, y: button.bounds.height + 4),
+            in: button
+        )
     }
 
     private func buildMenu() -> NSMenu {
@@ -146,6 +155,10 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         }
 
         menu.addItem(.separator())
+        if model.isRunning || model.isRecording {
+            add(to: menu, model.isRecording ? "Stop recording" : "Record screen",
+                #selector(toggleRecording), on: model.isRecording)
+        }
         add(to: menu, "Settings…", #selector(openSettings))
         let quit = NSMenuItem(title: "Quit Kurarin", action: #selector(quit), keyEquivalent: "q")
         quit.target = self
@@ -168,6 +181,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     @objc private func toggleMonitor() { model.monitorVoice.toggle() }
     @objc private func stopSounds() { model.stopAllSounds() }
     @objc private func openSettings() { showSettings() }
+    @objc private func toggleRecording() { model.toggleRecording() }
 
     @objc private func choosePreset(_ sender: NSMenuItem) {
         guard model.presets.indices.contains(sender.tag) else { return }

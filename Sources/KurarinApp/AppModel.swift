@@ -6,6 +6,7 @@ import Combine
 import KurarinDSP
 import KurarinEngine
 import KurarinPresets
+import KurarinRecording
 import KurarinSoundboard
 
 /// Anything worth explaining after the fact goes here rather than only into the
@@ -51,6 +52,19 @@ final class AppModel: ObservableObject {
     @Published private(set) var isRunning = false
     @Published private(set) var statusMessage: String?
 
+    /// Whether the message above is something that went wrong.
+    ///
+    /// Most of what lands here is: a device that vanished, a permission
+    /// refused, a microphone that heard nothing. Recording is the exception —
+    /// it reports success the same way, and "Saved to Movies" under a warning
+    /// triangle reads as a failure at a glance.
+    @Published private(set) var statusIsWarning = true
+
+    private func report(_ message: String, warning: Bool = true) {
+        statusMessage = message
+        statusIsWarning = warning
+    }
+
     @Published var selectedMicrophoneUID: String? { didSet { persistAndRestart(oldValue, selectedMicrophoneUID) } }
     @Published var selectedMonitorUID: String? { didSet { persistAndRestart(oldValue, selectedMonitorUID) } }
     @Published var latencyMode: LatencyMode = .balanced { didSet { persistAndRestart(oldValue, latencyMode) } }
@@ -70,7 +84,7 @@ final class AppModel: ObservableObject {
     /// is missing.
     func calibrateInputGain() {
         guard isRunning else {
-            statusMessage = "Start the engine before setting the microphone gain."
+            report("Start the engine before setting the microphone gain.")
             return
         }
         calibrationPeak = 0
@@ -86,12 +100,12 @@ final class AppModel: ObservableObject {
         defer { calibrationPeak = 0 }
 
         guard calibrationPeak > 0 else {
-            statusMessage = "Heard nothing. Check the microphone and try again."
+            report("Heard nothing. Check the microphone and try again.")
             return
         }
         let heardDB = 20 * log10(calibrationPeak)
         guard heardDB > -60 else {
-            statusMessage = "Heard almost nothing — speak while it listens."
+            report("Heard almost nothing — speak while it listens.")
             return
         }
 
@@ -99,9 +113,12 @@ final class AppModel: ObservableObject {
         // it rather than replacing it.
         let corrected = inputTrimDB + (AppModel.targetPeakDB - heardDB)
         inputTrimDB = min(max(corrected, -12), 36)
-        statusMessage = String(
-            format: "Microphone gain set to %+.0f dB — your voice peaked at %.0f dB.",
-            inputTrimDB, heardDB
+        report(
+            String(
+                format: "Microphone gain set to %+.0f dB — your voice peaked at %.0f dB.",
+                inputTrimDB, heardDB
+            ),
+            warning: false
         )
     }
 
@@ -257,7 +274,7 @@ final class AppModel: ObservableObject {
         // Only when the restart worked: if it did not, whatever start() has to
         // say about that matters more than which device went away.
         if isRunning {
-            statusMessage = "\(reason). Switched to the system default."
+            report("\(reason). Switched to the system default.")
         }
     }
 
@@ -274,7 +291,7 @@ final class AppModel: ObservableObject {
     func start() {
         refreshDevices()
         guard isDriverInstalled else {
-            statusMessage = AudioDeviceError.driverNotInstalled.localizedDescription
+            report(AudioDeviceError.driverNotInstalled.localizedDescription)
             appLog.error("start refused: the virtual device is not installed")
             return
         }
@@ -301,7 +318,7 @@ final class AppModel: ObservableObject {
             applyCurrentPreset()
             reloadAllSlots()
             isRunning = true
-            statusMessage = engine.captureFailure
+            if let failure = engine.captureFailure { report(failure) }
 
             if takeOverSystemInput, let virtualDevice = AudioDevices.virtualDevice() {
                 // Roblox and similar clients have no microphone picker and just
@@ -324,7 +341,7 @@ final class AppModel: ObservableObject {
             }
         } catch {
             isRunning = false
-            statusMessage = error.localizedDescription
+            report(error.localizedDescription)
             appLog.error("start failed: \(error.localizedDescription, privacy: .public)")
         }
     }
@@ -374,6 +391,7 @@ final class AppModel: ObservableObject {
 
     func toggleRunning() {
         isRunning ? stop() : start()
+        stopRecordingIfEngineStopped()
     }
 
     var latencyDescription: String {
@@ -463,7 +481,7 @@ final class AppModel: ObservableObject {
             selectedPresetID = saved.id
             statusMessage = nil
         } catch {
-            statusMessage = error.localizedDescription
+            report(error.localizedDescription)
         }
     }
 
@@ -647,7 +665,7 @@ final class AppModel: ObservableObject {
         if !rejected.isEmpty {
             // Carbon refuses a combination another application already holds,
             // and it is the only way to find out.
-            statusMessage = "Already taken by another app: \(rejected.sorted().joined(separator: ", "))"
+            report("Already taken by another app: \(rejected.sorted().joined(separator: ", "))")
         }
     }
 
@@ -742,6 +760,13 @@ final class AppModel: ObservableObject {
     /// Held for a couple of seconds after the last clipped sample, because
     /// clipping happens on syllables and a warning that blinks at syllable rate
     /// is unreadable.
+    /// A recording with no sound coming in is worse than no recording, so the
+    /// two stop together.
+    private func stopRecordingIfEngineStopped() {
+        guard isRecording, !isRunning else { return }
+        Task { await finishRecording() }
+    }
+
     private func updateClippingWarning() {
         let count = engine.clippedInputSamples
         if count > lastClippedCount {
@@ -753,6 +778,76 @@ final class AppModel: ObservableObject {
 
         let clipping = clippingHoldTicks > 0
         if clipping != isInputClipping { isInputClipping = clipping }
+    }
+
+    // MARK: - Screen recording
+
+    @Published private(set) var isRecording = false
+    @Published private(set) var recordingURL: URL?
+
+    private let recorder = ScreenRecorder()
+
+    /// Recording captures the engine's own mix rather than the system's sound.
+    ///
+    /// What a listener hears never reaches the speakers — it goes to the
+    /// virtual microphone — so asking the screen recorder for system audio
+    /// would capture the wrong thing. The engine hands its finished mix over
+    /// instead, which also means the recording holds exactly what was sent,
+    /// including the soundboard and the transformed voice, and none of the
+    /// monitoring.
+    func toggleRecording() {
+        if isRecording {
+            Task { await finishRecording() }
+        } else {
+            Task { await beginRecording() }
+        }
+    }
+
+    private func beginRecording() async {
+        guard isRunning else {
+            report("Start Kurarin first — there is no sound to record until it is running.")
+            return
+        }
+
+        let directory = FileManager.default.urls(for: .moviesDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        let stamp = DateFormatter()
+        stamp.dateFormat = "yyyy-MM-dd HH.mm.ss"
+        let url = directory.appendingPathComponent("Kurarin \(stamp.string(from: Date())).mov")
+
+        do {
+            engine.recordingSink = recorder.audio
+            try await recorder.start(to: url)
+            isRecording = true
+            recordingURL = url
+            report("Recording to \(url.lastPathComponent).", warning: false)
+        } catch {
+            engine.recordingSink = nil
+            report(error.localizedDescription)
+        }
+    }
+
+    private func finishRecording() async {
+        engine.recordingSink = nil
+        await recorder.stop()
+        isRecording = false
+
+        let lost = recorder.droppedSamples
+        if let url = recordingURL {
+            if lost > 0 {
+                report(String(
+                    format: "Saved %@ — %.0f ms of sound was lost to a slow disk.",
+                    url.lastPathComponent, Double(lost) / 48.0
+                ))
+            } else {
+                report("Saved \(url.lastPathComponent) to Movies.", warning: false)
+            }
+        }
+    }
+
+    func revealRecording() {
+        guard let recordingURL else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([recordingURL])
     }
 
     /// The shortcut printed on a soundboard tile, if the slot has one.
@@ -774,6 +869,7 @@ final class AppModel: ObservableObject {
         case .nextPreset:      cyclePreset(by: 1)
         case .previousPreset:  cyclePreset(by: -1)
         case .stopSoundboard:  stopAllSounds()
+        case .toggleRecording: toggleRecording()
         default:
             if let index = action.slotIndex { playSlot(index) }
         }

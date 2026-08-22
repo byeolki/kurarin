@@ -78,6 +78,7 @@ public final class HotKeyManager: @unchecked Sendable {
         case nextPreset
         case previousPreset
         case stopSoundboard
+        case toggleRecording
         case playSlot0, playSlot1, playSlot2, playSlot3, playSlot4, playSlot5
         case playSlot6, playSlot7, playSlot8, playSlot9, playSlot10, playSlot11
 
@@ -87,6 +88,7 @@ public final class HotKeyManager: @unchecked Sendable {
             case .toggleEffect:    return "Toggle voice effect"
             case .nextPreset:      return "Next preset"
             case .previousPreset:  return "Previous preset"
+            case .toggleRecording: return "Start or stop recording"
             case .stopSoundboard:  return "Stop all sounds"
             default:               return "Play slot \(slotIndex.map { $0 + 1 } ?? 0)"
             }

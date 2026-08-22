@@ -70,6 +70,11 @@ verdict on the same samples.
   so rather than leaving you wondering.
 - **Latency you choose.** 36, 46 or 56 ms end to end, trading the lowest
   fundamental the pitch tracker can follow against delay.
+- **Screen recording that captures what was sent.** Not what your speakers are
+  playing — the engine's own mix, after the limiter, so the file holds the
+  transformed voice and the soundboard exactly as your listeners got them. The
+  audio thread copies its block into a lock-free ring and the encoding happens
+  somewhere else, because a render callback cannot wait on a disk.
 
 ## Requirements
 
@@ -126,6 +131,9 @@ The app itself needs no installation — it runs from `build/`, or drag it to
    be the target if that is more than an octave away. Presets are plain JSON in
    `~/Library/Application Support/Kurarin/presets`.
 5. **Soundboard** — drop audio files onto the tiles, set a volume, bind a key.
+6. **Record screen** in Devices, or from the menu bar. Recordings land in
+   Movies. macOS asks for screen recording permission the first time; if you
+   refuse it, the button says so and nothing else stops working.
 6. **Shortcuts** — click a binding and press the combination you want. These
    work while a game holds the keyboard and need no accessibility permission.
 
@@ -154,6 +162,7 @@ that can change lives in the app.
 | `Sources/KurarinEngine/` | Aggregate device, process tap, render callback |
 | `Sources/KurarinSoundboard/` | Sample decoding and lock-free playback |
 | `Sources/KurarinPresets/` | Parameter model and JSON persistence |
+| `Sources/KurarinRecording/` | Screen capture, and the ring that gets audio off the render thread |
 | `Sources/KurarinApp/` | SwiftUI menu bar app and main window |
 
 [docs/architecture.md](docs/architecture.md) covers the routing, the shifter and

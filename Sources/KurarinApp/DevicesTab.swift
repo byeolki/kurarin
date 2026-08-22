@@ -77,6 +77,29 @@ struct DevicesTab: View {
                 }
             }
 
+            Section("Recording") {
+                HStack {
+                    Button(model.isRecording ? "Stop recording" : "Record screen") {
+                        model.toggleRecording()
+                    }
+                    .disabled(!model.isRunning)
+
+                    if model.isRecording {
+                        Circle()
+                            .fill(.red)
+                            .frame(width: 8, height: 8)
+                        Text("Recording")
+                            .foregroundStyle(.secondary)
+                    } else if model.recordingURL != nil {
+                        Button("Show in Finder") { model.revealRecording() }
+                    }
+                }
+
+                Text("Records the screen with the mix your listeners hear — the transformed voice, the soundboard and anything you are sharing. Not what comes out of your own headphones. Saved to Movies.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("Monitoring") {
                 Picker("Headphones", selection: $model.selectedMonitorUID) {
                     Text("System default").tag(String?.none)
