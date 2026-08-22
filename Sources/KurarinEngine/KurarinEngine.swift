@@ -66,13 +66,22 @@ public final class KurarinEngine {
     /// two fast-moving values at a slower rate.
     public private(set) var inputLevel: Float = 0
 
-    /// Where the finished mix is copied while a recording is running.
+    /// Where the finished mix goes while a recording is running.
     ///
-    /// Set and cleared from the main thread, read by the audio thread. A plain
-    /// reference store: the worst a race can do is include or miss one block at
-    /// the very start or end of a recording, and neither is worth a lock on
-    /// this thread.
-    public var recordingSink: SampleRing?
+    /// Allocated for the life of the engine rather than handed over when a
+    /// recording starts. A class reference cannot be swapped atomically, so a
+    /// main thread clearing one while the audio thread reads it is a
+    /// use-after-free waiting to happen — and merely reading an optional
+    /// reference retains it, which puts ARC on a thread that should not have
+    /// any. The ring is four hundred kilobytes and always there.
+    public let recordingAudio = SampleRing()
+
+    /// Whether the audio thread should be filling it.
+    ///
+    /// A word-sized store, set and cleared from the main thread. The worst a
+    /// race here can do is include or miss one block at the very start or end
+    /// of a recording, which is a millisecond either side of a button press.
+    public var isCapturingForRecording = false
 
     /// Samples that arrived already at full scale, counted before any gain of
     /// ours is applied.
@@ -400,8 +409,8 @@ public final class KurarinEngine {
         // were sent rather than a louder version of it. The ring is the only
         // thing this thread touches: a bounded copy, and the file writing
         // happens somewhere else entirely.
-        if let recording = recordingSink {
-            recording.write(mixBuffer, count: frames)
+        if isCapturingForRecording {
+            recordingAudio.write(mixBuffer, count: frames)
         }
 
         ChannelRouter.write(

@@ -34,7 +34,9 @@ public final class ScreenRecorder: NSObject, @unchecked Sendable {
     public private(set) var isRecording = false
     public private(set) var outputURL: URL?
 
-    /// Filled by the audio thread while a recording is running.
+    /// Filled by the audio thread while a recording is running. Owned by
+    /// whoever is producing the sound, so that it can outlive any one
+    /// recording and never has to be handed across threads.
     public let audio: SampleRing
 
     private var stream: SCStream?
@@ -56,9 +58,9 @@ public final class ScreenRecorder: NSObject, @unchecked Sendable {
     private var scratch: UnsafeMutablePointer<Float>
     private let scratchCapacity = 16384
 
-    public init(sampleRate: Double = 48000) {
+    public init(audio: SampleRing, sampleRate: Double = 48000) {
         self.sampleRate = sampleRate
-        audio = SampleRing(sampleRate: Float(sampleRate), seconds: 2)
+        self.audio = audio
         scratch = UnsafeMutablePointer<Float>.allocate(capacity: scratchCapacity)
         scratch.initialize(repeating: 0, count: scratchCapacity)
         super.init()
@@ -160,14 +162,38 @@ public final class ScreenRecorder: NSObject, @unchecked Sendable {
 
         // Whatever the engine produced in the last few milliseconds is still in
         // the ring, and the file is shorter than the recording without it.
-        queue.sync { drainAudio() }
+        //
+        // Handed to the queue rather than run on it synchronously: appending
+        // can block while the encoder catches up, and this is called from the
+        // interface, which would sit frozen behind it.
+        await withCheckedContinuation { continuation in
+            queue.async {
+                self.drainAudio()
+                continuation.resume()
+            }
+        }
+
+        // Nothing was ever written if no frame arrived — a recording stopped
+        // within a frame of starting, or a display that never produced one.
+        // Finishing a writer that was never started does not throw, it aborts
+        // the process, so this is the difference between an empty recording and
+        // the app disappearing.
+        //
+        // No file to clean up: AVAssetWriter creates one at startWriting, which
+        // is what never happened. Only the URL needs forgetting, so that
+        // "Show in Finder" does not point at nothing.
+        guard let writer, writer.status == .writing else {
+            outputURL = nil
+            self.writer = nil
+            videoInput = nil
+            audioInput = nil
+            return
+        }
 
         videoInput?.markAsFinished()
         audioInput?.markAsFinished()
-        if let writer, writer.status == .writing {
-            await writer.finishWriting()
-        }
-        writer = nil
+        await writer.finishWriting()
+        self.writer = nil
         videoInput = nil
         audioInput = nil
     }

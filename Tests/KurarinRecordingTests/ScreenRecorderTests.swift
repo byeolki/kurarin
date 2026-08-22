@@ -21,7 +21,7 @@ final class ScreenRecorderTests: XCTestCase {
     }
 
     func testRecordsPictureAndSoundTogether() async throws {
-        let recorder = ScreenRecorder()
+        let recorder = ScreenRecorder(audio: SampleRing())
 
         do {
             try await recorder.start(to: url)
@@ -70,5 +70,25 @@ final class ScreenRecorderTests: XCTestCase {
         XCTAssertGreaterThan(audioDuration, seconds * 0.6, "most of the sound is missing")
 
         XCTAssertEqual(recorder.droppedSamples, 0, "the ring overran during a two second recording")
+    }
+
+    /// Started and stopped before a single frame could arrive.
+    ///
+    /// Nothing has been written at that point, and asking AVAssetWriter to
+    /// finish a session it never started aborts the process rather than
+    /// returning an error — so this is the difference between an empty
+    /// recording and the app vanishing while the user watches. Removing the
+    /// guard makes this test die on signal 6.
+    func testStoppingBeforeAnythingIsWrittenDoesNotCrash() async throws {
+        let recorder = ScreenRecorder(audio: SampleRing())
+        do {
+            try await recorder.start(to: url)
+        } catch RecordingError.permissionDenied {
+            throw XCTSkip("Screen recording permission has not been granted to the test runner.")
+        }
+        await recorder.stop()
+
+        XCTAssertFalse(recorder.isRecording)
+        XCTAssertNil(recorder.outputURL, "a recording that never began still reports a file")
     }
 }

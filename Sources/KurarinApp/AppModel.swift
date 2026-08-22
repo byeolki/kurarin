@@ -785,7 +785,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var isRecording = false
     @Published private(set) var recordingURL: URL?
 
-    private let recorder = ScreenRecorder()
+    private lazy var recorder = ScreenRecorder(audio: engine.recordingAudio)
 
     /// Recording captures the engine's own mix rather than the system's sound.
     ///
@@ -816,21 +816,21 @@ final class AppModel: ObservableObject {
         let url = directory.appendingPathComponent("Kurarin \(stamp.string(from: Date())).mov")
 
         do {
-            engine.recordingSink = recorder.audio
+            engine.isCapturingForRecording = true
             try await recorder.start(to: url)
             recordingNeedsPermission = false
             isRecording = true
             recordingURL = url
             report("Recording to \(url.lastPathComponent).", warning: false)
         } catch {
-            engine.recordingSink = nil
+            engine.isCapturingForRecording = false
             recordingNeedsPermission = error is RecordingError
             report(error.localizedDescription)
         }
     }
 
     private func finishRecording() async {
-        engine.recordingSink = nil
+        engine.isCapturingForRecording = false
         await recorder.stop()
         isRecording = false
 
