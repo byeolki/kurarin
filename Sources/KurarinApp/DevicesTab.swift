@@ -90,6 +90,10 @@ struct DevicesTab: View {
                             .frame(width: 8, height: 8)
                         Text("Recording")
                             .foregroundStyle(.secondary)
+                    } else if model.recordingNeedsPermission {
+                        Button("Open Screen Recording settings") {
+                            model.openScreenRecordingSettings()
+                        }
                     } else if model.recordingURL != nil {
                         Button("Show in Finder") { model.revealRecording() }
                     }

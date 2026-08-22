@@ -818,11 +818,13 @@ final class AppModel: ObservableObject {
         do {
             engine.recordingSink = recorder.audio
             try await recorder.start(to: url)
+            recordingNeedsPermission = false
             isRecording = true
             recordingURL = url
             report("Recording to \(url.lastPathComponent).", warning: false)
         } catch {
             engine.recordingSink = nil
+            recordingNeedsPermission = error is RecordingError
             report(error.localizedDescription)
         }
     }
@@ -844,6 +846,21 @@ final class AppModel: ObservableObject {
             }
         }
     }
+
+    /// macOS only offers the permission dialog once, and never at all for an
+    /// app it has not seen signed the same way twice — which is every build of
+    /// an ad-hoc signed one. Sending the user straight to the right pane is
+    /// more use than telling them where it is.
+    func openScreenRecordingSettings() {
+        guard let url = URL(string:
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
+        ) else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    /// True once a recording has been refused, so the interface can offer the
+    /// settings pane rather than showing the button that just failed.
+    @Published private(set) var recordingNeedsPermission = false
 
     func revealRecording() {
         guard let recordingURL else { return }

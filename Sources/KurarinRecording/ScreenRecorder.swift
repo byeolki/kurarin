@@ -1,4 +1,5 @@
 @preconcurrency import AVFoundation
+import CoreGraphics
 import Foundation
 import ScreenCaptureKit
 
@@ -12,7 +13,7 @@ public enum RecordingError: Error, LocalizedError {
         case .noDisplay:
             return "No display to record."
         case .permissionDenied:
-            return "Screen recording permission was refused. Grant it in System Settings ▸ Privacy & Security ▸ Screen Recording, then try again."
+            return "Screen recording permission was refused. If no dialog appeared, macOS has remembered an earlier answer: turn Kurarin on in System Settings ▸ Privacy & Security ▸ Screen Recording, then try again."
         case .writerFailed(let reason):
             return "Could not write the recording: \(reason)."
         }
@@ -72,6 +73,19 @@ public final class ScreenRecorder: NSObject, @unchecked Sendable {
 
     public func start(to url: URL) async throws {
         guard !isRecording else { return }
+
+        // Ask before trying. ScreenCaptureKit refuses without permission but
+        // does not raise the prompt itself, so a first-time user would be told
+        // they had denied something nobody ever asked them about.
+        //
+        // Off the main thread, because the request blocks until the dialog is
+        // answered and answering it takes as long as a person takes. Called
+        // where it is isolated to the interface, it freezes the window and the
+        // menu bar until they decide.
+        if !CGPreflightScreenCaptureAccess() {
+            let granted = await Task.detached { CGRequestScreenCaptureAccess() }.value
+            guard granted else { throw RecordingError.permissionDenied }
+        }
 
         let content: SCShareableContent
         do {
