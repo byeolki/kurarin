@@ -105,12 +105,12 @@ final class TransientSuppressorTests: XCTestCase {
     /// the voicing verdict, so the only thing that can move the result is the
     /// pair of numbers under test.
     func testVoicingRaisesTheThresholdBeforeAnythingIsDucked() {
-        // Sized to sit between the two thresholds: 3.5 times the reference
-        // catches it, 4.5 does not. That gap is narrow, so the amplitude was
-        // found by sweeping rather than reasoned about — anything from 0.05 up
-        // clears both and only the depth is left to tell them apart.
+        // Sized to sit between the two thresholds. The gap is narrow, so the
+        // amplitude was found by sweeping rather than reasoned about: below
+        // 0.05 neither fires, from 0.12 up both do, and only the depth is left
+        // to tell them apart.
         var samples = Signal.noise(frames: 24000, amplitude: 0.02)
-        click(at: 12000, in: &samples, amplitude: 0.03)
+        click(at: 12000, in: &samples, amplitude: 0.08)
 
         let unvoiced = processStreaming(suppressor(strength: 1, voiced: false), samples)
         let voiced = processStreaming(suppressor(strength: 1, voiced: true), samples)
@@ -185,5 +185,50 @@ final class TransientSuppressorTests: XCTestCase {
     func testSilenceInSilenceOut() {
         let output = processStreaming(suppressor(strength: 1, voiced: false), Signal.silence(frames: 4800))
         XCTAssertEqual(Signal.peak(output), 0)
+    }
+
+    /// What the band split is for.
+    ///
+    /// A click during speech used to bring the whole signal down with it,
+    /// because one broadband detector can only make one decision. The voice
+    /// went quiet for as long as the duck lasted, which is a hole where a
+    /// syllable should be — often more noticeable than the click.
+    ///
+    /// Now only the bands the strike actually landed in come down. The click is
+    /// mostly high; the voice is mostly low; so the low end should come through
+    /// the duck almost untouched while the click is still taken off.
+    func testAClickDuringSpeechDoesNotTakeTheVoiceWithIt() {
+        var samples = heldVowel(frames: 24000)
+        // High and sharp, the way a key or a plate is.
+        let length = Int(sampleRate * 0.003)
+        let noise = Signal.noise(frames: length, amplitude: 1.2, seed: 7)
+        let highPass = Biquad(sampleRate: sampleRate)
+        highPass.configure(kind: .highpass, frequency: 2000, q: 0.707)
+        let strike = highPass.process(noise)
+        for i in 0..<length {
+            samples[12000 + i] += strike[i] * expf(-Float(i) / (sampleRate * 0.0008))
+        }
+
+        let output = processStreaming(suppressor(strength: 1, voiced: true), samples)
+
+        func lowEnd(_ signal: [Float]) -> Float {
+            let filter = Biquad(sampleRate: sampleRate)
+            filter.configure(kind: .lowpass, frequency: 800, q: 0.707)
+            return Signal.rms(Array(filter.process(signal)[11900..<12600]))
+        }
+        func highEnd(_ signal: [Float]) -> Float {
+            let filter = Biquad(sampleRate: sampleRate)
+            filter.configure(kind: .highpass, frequency: 2000, q: 0.707)
+            return Signal.peak(Array(filter.process(signal)[11900..<12600]))
+        }
+
+        XCTAssertLessThan(
+            highEnd(output), highEnd(samples) * 0.5,
+            "the strike was not taken off"
+        )
+        XCTAssertGreaterThan(
+            lowEnd(output), lowEnd(samples) * 0.8,
+            "the voice under the strike was ducked along with it"
+        )
     }
 }

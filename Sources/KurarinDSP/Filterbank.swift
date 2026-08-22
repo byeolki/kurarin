@@ -260,9 +260,52 @@ final class Filterbank {
     /// Root mean square of one band of the current `source`, through the
     /// measurement filters.
     private func measureBand(_ index: Int, count: Int, floorAlreadyApplied: Bool) -> Float {
+        band(index, count: count, floorAlreadyApplied: floorAlreadyApplied) { samples, count in
+            var sum: Float = 0
+            for i in 0..<count { sum += samples[i] * samples[i] }
+            return count > 0 ? sqrtf(sum / Float(count)) : 0
+        }
+    }
+
+    /// Largest sample of one band, rather than its average.
+    ///
+    /// Worth having as well as the mean because the two answer different
+    /// questions. A steady noise floor has a crest factor of about three; a
+    /// struck object has one of ten or more, and its energy is spread over so
+    /// few samples that its mean sits under the floor it is clearly audible
+    /// over. Anything trying to tell a click from a room has to look at the
+    /// peak.
+    func measurePeak(
+        _ buffer: UnsafePointer<Float>,
+        frameCount: Int,
+        peak: (_ bandIndex: Int, _ peak: Float, _ frames: Int) -> Void
+    ) {
+        var offset = 0
+        while offset < frameCount {
+            let count = min(frameCount - offset, capacity)
+            for i in 0..<count { source[i] = buffer[offset + i] }
+            for index in 0..<bandCount {
+                let value = band(index, count: count, floorAlreadyApplied: false) { samples, count in
+                    var largest: Float = 0
+                    for i in 0..<count { largest = max(largest, abs(samples[i])) }
+                    return largest
+                }
+                peak(index, value, count)
+            }
+            offset += count
+        }
+    }
+
+    /// Filters `source` down to one band and hands it to `summarise`.
+    private func band(
+        _ index: Int,
+        count: Int,
+        floorAlreadyApplied: Bool,
+        _ summarise: (UnsafeMutablePointer<Float>, Int) -> Float
+    ) -> Float {
         for i in 0..<count { measured[i] = source[i] }
 
-        var sum: Float = 0
+        var result: Float = 0
         measured.withUnsafeMutableBufferPointer { samples in
             guard let base = samples.baseAddress else { return }
             if index > 0 || (hasFloor && !floorAlreadyApplied) {
@@ -271,8 +314,8 @@ final class Filterbank {
             if index < analysisLow.count {
                 analysisLow[index].process(base, frameCount: count)
             }
-            for i in 0..<count { sum += base[i] * base[i] }
+            result = summarise(base, count)
         }
-        return count > 0 ? sqrtf(sum / Float(count)) : 0
+        return result
     }
 }
