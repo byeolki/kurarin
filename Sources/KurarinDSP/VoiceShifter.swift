@@ -252,9 +252,18 @@ public final class VoiceShifter: AudioProcessor {
 
             layDown(period: period, formant: formant, advance: Float(advance), readOffset: readOffset)
 
-            // Real voices are not metronomes: consecutive glottal periods differ
-            // by a fraction of a percent, and an output with none of that
-            // variation is heard as synthetic however good the spectrum is.
+            // Real voices are not metronomes: consecutive glottal periods
+            // differ by a fraction of a percent, and an output with none of
+            // that variation is heard as synthetic however good the spectrum
+            // is.
+            //
+            // Deliberately left untested. The effect is there and behaves as
+            // jitter should — over a long lag it accumulates, so the output's
+            // own autocorrelation peak falls from 0.9609 without it to 0.9566
+            // with — but 0.4% is too thin a margin to hang a regression test
+            // on; a threshold in that gap would fire on changes that have
+            // nothing to do with it. The perceptual claim above is not
+            // something these tests can reach either way.
             let jitter = 1 + (Double(nextRandom() % 1000) / 1000 - 0.5) * 0.006
             synthesisPosition += advance * jitter
         }
@@ -375,9 +384,16 @@ public final class VoiceShifter: AudioProcessor {
         let synthesisCentre = Int(synthesisPosition.rounded())
         // Periods are rarely a whole number of samples, so the ideal mark falls
         // between two of them. Rounding the placement alone leaves a sub-sample
-        // jitter that repeats with the fractional part and shows up as a low
-        // buzz under the voice. Folding the remainder into the read position
-        // moves the correction into the interpolator, where it costs nothing.
+        // error that repeats with the fractional part. Folding the remainder
+        // into the read position moves the correction into the interpolator,
+        // where it costs nothing.
+        //
+        // This is kept for being free and strictly more correct, not for a
+        // measured gain. It used to claim the rounding showed up as a low buzz
+        // under the voice; removing the correction changes every sample, but
+        // level, envelope variation and energy below 80 Hz all come back
+        // identical to five significant figures, so whatever it is worth is
+        // below what these measurements can see.
         let fractional = Float(synthesisPosition - Double(synthesisCentre))
         // Hoisted: a divide per sample is not worth paying inside the loop.
         let windowScale = Float(VoiceShifter.windowTableSize - 1) / Float(2 * halfOutput)

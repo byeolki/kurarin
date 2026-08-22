@@ -171,4 +171,34 @@ final class ShifterNaturalnessTests: XCTestCase {
         XCTAssertLessThan(worst, mean * 0.5, "the output level jumps as the voiced decision flips")
         XCTAssertTrue(Signal.isFinite(output))
     }
+
+    /// Re-anchoring every analysis mark to the local peak is what stops the
+    /// estimate's error compounding. Without it the marks slide off the pulses
+    /// over a few dozen grains, the Hann window starts cutting the loudest part
+    /// of each period, and the output goes quiet: 1.03 dB down over five
+    /// seconds of a steady vowel, which is the whole of what the refinement
+    /// buys and enough to hear as the voice sagging.
+    func testMarksStayOnThePulsesInsteadOfSlidingOff() {
+        var input = [Float](repeating: 0, count: 240000)
+        for harmonic in 1...8 {
+            let partial = Signal.sine(
+                frequency: 120 * Float(harmonic),
+                frames: 240000,
+                amplitude: 0.3 / Float(harmonic)
+            )
+            for i in input.indices { input[i] += partial[i] }
+        }
+
+        let shifter = VoiceShifter(sampleRate: Signal.sampleRate, latencyMode: .balanced)
+        shifter.pitchRatio = 1.4
+        shifter.formantRatio = 1.15
+
+        let output = Array(processStreaming(shifter, input)[48000...])
+        let held = Signal.rms(output) / Signal.rms(Array(input[48000...]))
+
+        XCTAssertGreaterThan(
+            held, 0.75,
+            "the output lost level over a steady vowel: \(20 * log10f(held)) dB"
+        )
+    }
 }

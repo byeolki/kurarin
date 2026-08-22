@@ -86,6 +86,59 @@ final class VoiceIdentityTests: XCTestCase {
         XCTAssertEqual(chain.effectivePitchRatio, 0.6, accuracy: 1e-6)
     }
 
+    /// The other half of the test below, which only ever fed it a voice.
+    ///
+    /// Breath belongs to a vowel. Adding it on unvoiced frames lays hiss over
+    /// the fricatives, where there is already noise and none of it wants
+    /// company — and the name of the test that was here promised this was
+    /// checked when nothing checked it.
+    func testBreathIsSilentOnUnvoicedFrames() {
+        // The same signal both times, so the voicing flag is the only variable.
+        // A voice rather than noise: the band the breath occupies has to be
+        // quiet enough for an addition to it to show, and broadband noise fills
+        // it already.
+        var input = [Float](repeating: 0, count: 48000)
+        for harmonic in 1...6 {
+            let partial = Signal.sine(
+                frequency: 130 * Float(harmonic),
+                frames: 48000,
+                amplitude: 0.35 / Float(harmonic)
+            )
+            for i in input.indices { input[i] += partial[i] }
+        }
+
+        func breath(voiced: Bool) -> [Float] {
+            let unit = BreathGenerator(sampleRate: Signal.sampleRate)
+            unit.amount = 0.8
+            unit.isVoiced = voiced
+            return processStreaming(unit, input)
+        }
+
+        func inBreathBand(_ samples: [Float]) -> Float {
+            let highPass = Biquad(sampleRate: Signal.sampleRate)
+            highPass.configure(kind: .highpass, frequency: 2200, q: 0.707)
+            let lowPass = Biquad(sampleRate: Signal.sampleRate)
+            lowPass.configure(kind: .lowpass, frequency: 4800, q: 0.707)
+            return Signal.rms(lowPass.process(highPass.process(samples)))
+        }
+
+        // Past the blend ramp, so this is the settled state rather than the
+        // fade into it.
+        let tail = 24000...
+        let dry = inBreathBand(Array(input[tail]))
+        let unvoiced = inBreathBand(Array(breath(voiced: false)[tail]))
+        let voiced = inBreathBand(Array(breath(voiced: true)[tail]))
+
+        XCTAssertEqual(
+            unvoiced, dry, accuracy: dry * 0.02,
+            "breath was added on an unvoiced frame"
+        )
+        XCTAssertGreaterThan(
+            voiced, dry * 1.05,
+            "no breath was added even while voiced, so this proves nothing"
+        )
+    }
+
     func testBreathAddsHighFrequencyNoiseOnlyWhileVoiced() {
         var parameters = VoiceParameters()
         parameters.breathiness = 0.8

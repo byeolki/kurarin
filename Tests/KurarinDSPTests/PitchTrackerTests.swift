@@ -1,6 +1,84 @@
 import XCTest
 @testable import KurarinDSP
 
+final class PitchTrackerTests: XCTestCase {
+    private func track(_ signal: [Float], minimumHz: Float = 60) -> PitchTracker {
+        let tracker = PitchTracker(sampleRate: Signal.sampleRate, minimumHz: minimumHz)
+        signal.withUnsafeBufferPointer { buffer in
+            guard let base = buffer.baseAddress else { return }
+            var offset = 0
+            while offset < buffer.count {
+                let frames = min(256, buffer.count - offset)
+                tracker.push(base + offset, frameCount: frames)
+                tracker.analyse()
+                offset += frames
+            }
+        }
+        return tracker
+    }
+
+    func testFindsFundamentalOfSteadyTone() {
+        let tracker = track(Signal.sine(frequency: 200, frames: 24000))
+        XCTAssertTrue(tracker.isVoiced)
+
+        let detectedHz = Signal.sampleRate / tracker.periodSamples
+        XCTAssertEqual(detectedHz, 200, accuracy: 4)
+    }
+
+    func testFindsLowMaleFundamental() {
+        let tracker = track(Signal.sine(frequency: 85, frames: 24000))
+        XCTAssertTrue(tracker.isVoiced)
+        XCTAssertEqual(Signal.sampleRate / tracker.periodSamples, 85, accuracy: 3)
+    }
+
+    func testFindsHighFundamental() {
+        let tracker = track(Signal.sine(frequency: 330, frames: 24000))
+        XCTAssertTrue(tracker.isVoiced)
+        XCTAssertEqual(Signal.sampleRate / tracker.periodSamples, 330, accuracy: 8)
+    }
+
+    func testReportsNoiseAsUnvoiced() {
+        let tracker = track(Signal.noise(frames: 24000))
+        XCTAssertFalse(tracker.isVoiced)
+    }
+
+    func testReportsSilenceAsUnvoiced() {
+        let tracker = track(Signal.silence(frames: 24000))
+        XCTAssertFalse(tracker.isVoiced)
+    }
+
+    /// The estimate is made on a quarter-rate copy and multiplied back up, so
+    /// a whole-sample error in the analysis is four samples in the answer. The
+    /// parabola through the minimum is what recovers the fraction, and it is
+    /// worth about forty times: across this range the worst error is 0.08 Hz
+    /// with it and 3.33 Hz without.
+    ///
+    /// The other tests here allow 3 to 8 Hz, which is the accuracy needed to
+    /// name a note. This one is tight on purpose — the pitch target divides by
+    /// this number, so a percent of error here is a percent of error in the
+    /// voice that comes out.
+    func testResolvesPitchToWellUnderAHertz() {
+        var worst: Float = 0
+        var worstAt: Float = 0
+
+        for hz in [Float(85), 97, 110, 123, 140, 155, 175, 196, 220, 247, 277, 311, 330] {
+            let tracker = track(Signal.sine(frequency: hz, frames: 24000))
+            XCTAssertTrue(tracker.isVoiced, "\(hz) Hz was not heard as voiced")
+
+            let error = abs(Signal.sampleRate / tracker.periodSamples - hz)
+            if error > worst {
+                worst = error
+                worstAt = hz
+            }
+        }
+
+        XCTAssertLessThan(
+            worst, 0.3,
+            "worst error \(worst) Hz at \(worstAt) Hz — sub-sample resolution has been lost"
+        )
+    }
+}
+
 /// Cases the steady-tone tests next to the shifter do not reach: a signal with
 /// the harmonic structure that makes naive estimators drop an octave, and the
 /// buffering behaviour underneath the estimate.

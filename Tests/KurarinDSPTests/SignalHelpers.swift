@@ -1,4 +1,5 @@
 import Foundation
+@testable import KurarinDSP
 
 enum Signal {
     static let sampleRate: Float = 48000
@@ -87,4 +88,20 @@ enum Signal {
         }
         return nil
     }
+}
+
+/// Runs a unit the way the audio thread does — in fixed blocks — rather than
+/// handing it the whole signal at once, which no real callback ever does.
+func processStreaming(_ unit: AudioProcessor, _ samples: [Float], blockSize: Int = 256) -> [Float] {
+    var output = samples
+    output.withUnsafeMutableBufferPointer { buffer in
+        guard let base = buffer.baseAddress else { return }
+        var offset = 0
+        while offset < buffer.count {
+            let frames = min(blockSize, buffer.count - offset)
+            unit.process(base + offset, frameCount: frames)
+            offset += frames
+        }
+    }
+    return output
 }

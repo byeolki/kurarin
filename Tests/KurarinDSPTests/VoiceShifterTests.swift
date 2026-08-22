@@ -1,69 +1,6 @@
 import XCTest
 @testable import KurarinDSP
 
-/// Runs a unit the way the audio thread does — in fixed blocks — rather than
-/// handing it the whole signal at once, which no real callback ever does.
-func processStreaming(_ unit: AudioProcessor, _ samples: [Float], blockSize: Int = 256) -> [Float] {
-    var output = samples
-    output.withUnsafeMutableBufferPointer { buffer in
-        guard let base = buffer.baseAddress else { return }
-        var offset = 0
-        while offset < buffer.count {
-            let frames = min(blockSize, buffer.count - offset)
-            unit.process(base + offset, frameCount: frames)
-            offset += frames
-        }
-    }
-    return output
-}
-
-final class PitchTrackerTests: XCTestCase {
-    private func track(_ signal: [Float], minimumHz: Float = 60) -> PitchTracker {
-        let tracker = PitchTracker(sampleRate: Signal.sampleRate, minimumHz: minimumHz)
-        signal.withUnsafeBufferPointer { buffer in
-            guard let base = buffer.baseAddress else { return }
-            var offset = 0
-            while offset < buffer.count {
-                let frames = min(256, buffer.count - offset)
-                tracker.push(base + offset, frameCount: frames)
-                tracker.analyse()
-                offset += frames
-            }
-        }
-        return tracker
-    }
-
-    func testFindsFundamentalOfSteadyTone() {
-        let tracker = track(Signal.sine(frequency: 200, frames: 24000))
-        XCTAssertTrue(tracker.isVoiced)
-
-        let detectedHz = Signal.sampleRate / tracker.periodSamples
-        XCTAssertEqual(detectedHz, 200, accuracy: 4)
-    }
-
-    func testFindsLowMaleFundamental() {
-        let tracker = track(Signal.sine(frequency: 85, frames: 24000))
-        XCTAssertTrue(tracker.isVoiced)
-        XCTAssertEqual(Signal.sampleRate / tracker.periodSamples, 85, accuracy: 3)
-    }
-
-    func testFindsHighFundamental() {
-        let tracker = track(Signal.sine(frequency: 330, frames: 24000))
-        XCTAssertTrue(tracker.isVoiced)
-        XCTAssertEqual(Signal.sampleRate / tracker.periodSamples, 330, accuracy: 8)
-    }
-
-    func testReportsNoiseAsUnvoiced() {
-        let tracker = track(Signal.noise(frames: 24000))
-        XCTAssertFalse(tracker.isVoiced)
-    }
-
-    func testReportsSilenceAsUnvoiced() {
-        let tracker = track(Signal.silence(frames: 24000))
-        XCTAssertFalse(tracker.isVoiced)
-    }
-}
-
 final class VoiceShifterTests: XCTestCase {
     /// A vowel-like source: a fundamental with a few harmonics, which is what
     /// the pitch tracker and the overlap-add actually have to cope with.
