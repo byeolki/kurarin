@@ -52,6 +52,45 @@ final class ShifterNaturalnessTests: XCTestCase {
         return filter.process(samples)
     }
 
+    /// A fricative has no glottal period, and the pitch control must therefore
+    /// do nothing to it at all. The unvoiced path exists for that: fixed-length
+    /// grains at their original spacing, so noise is resampled for formants and
+    /// otherwise passed through.
+    ///
+    /// Level is what shows it. Run noise through at five pitch ratios and the
+    /// output level does not move; take the unvoiced path away and it tracks
+    /// the ratio, so an "s" gets quieter as the pitch slider goes up and louder
+    /// as it comes down — 0.56 of the input at a ratio of 2, 1.11 at 0.5.
+    ///
+    /// Periodicity is not the measurement here, which is worth recording
+    /// because it is the obvious one to reach for. Slicing noise on invented
+    /// marks does stamp a period onto it, but the grain decorrelation added for
+    /// breath already breaks that up, so the two mechanisms overlap and
+    /// autocorrelation separates them barely at all.
+    func testThePitchControlDoesNothingToAFricative() {
+        let input = Signal.noise(frames: 96000, amplitude: 0.4)
+        let reference = Signal.rms(Array(input[48000...]))
+        var levels: [Float] = []
+
+        for ratio in [Float(0.5), 0.7, 1.2, 1.5, 2.0] {
+            let shifter = VoiceShifter(sampleRate: Signal.sampleRate, latencyMode: .balanced)
+            shifter.pitchRatio = ratio
+            shifter.formantRatio = 1
+
+            let output = Array(processStreaming(shifter, input)[48000...])
+            XCTAssertTrue(Signal.isFinite(output), "ratio \(ratio)")
+            levels.append(Signal.rms(output) / reference)
+        }
+
+        let lowest = levels.min() ?? 0
+        let highest = levels.max() ?? 0
+        XCTAssertGreaterThan(lowest, 0.7, "the fricative was thinned out: \(levels)")
+        XCTAssertLessThan(
+            highest - lowest, 0.05,
+            "the level of unpitched sound follows the pitch control: \(levels)"
+        )
+    }
+
     func testRaisingPitchDoesNotTurnBreathIntoABuzz() {
         let input = breathyVoice(f0: 120, frames: 96000)
         let shifter = VoiceShifter(sampleRate: Signal.sampleRate, latencyMode: .balanced)

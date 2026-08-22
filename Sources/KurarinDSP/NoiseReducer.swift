@@ -203,9 +203,19 @@ public final class NoiseReducer: AudioProcessor {
     ///
     /// The reconstruction sums differences of lowpasses, which is exact when
     /// the bands move together and leaves a phase residue when one band is
-    /// pulled away from its neighbours — enough, in the worst case, to make a
-    /// tone come back louder than it went in. A noise floor is broadband, so
-    /// the gains want to move together anyway; this makes sure they do.
+    /// pulled away from its neighbours. A noise floor is broadband, so the
+    /// gains want to move together anyway; this keeps them from drifting apart
+    /// on a signal that is not.
+    ///
+    /// This carried a stronger claim — that the residue was enough to make a
+    /// tone come back louder than it went in — which does not survive being
+    /// measured. Three attempts to force adjacent gains apart (a tone against
+    /// a broadband floor, a tone alone in a quiet band, and noise confined to
+    /// one crossover with a tone in the next) never produced a band above
+    /// unity, with the averaging or without it. What the averaging does do is
+    /// take slightly more off a marginal tone, 2.9 dB against 2.4. It is kept
+    /// because it is nearly free and the reasoning above still holds, not
+    /// because a failure was reproduced.
     private func blendWithNeighbours(_ gain: Float, band index: Int) -> Float {
         let below = index > 0 ? gains[index - 1] : gain
         let above = index + 1 < smoothed.count ? smoothed[index + 1] : gain

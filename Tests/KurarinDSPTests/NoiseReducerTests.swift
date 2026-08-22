@@ -161,4 +161,75 @@ final class NoiseReducerTests: XCTestCase {
         let fineLevel = Signal.rms(Array(fine[range]))
         XCTAssertEqual(coarseLevel, fineLevel, accuracy: coarseLevel * 0.15)
     }
+
+    /// Drives the reducer with the voicing verdict the chain would give it,
+    /// which is the only way the speech-protecting half of the design runs.
+    private func reduce(_ input: [Float], strength: Float, voicedFrom: Int) -> [Float] {
+        let reducer = NoiseReducer(sampleRate: Signal.sampleRate)
+        reducer.strength = strength
+        var output = input
+        output.withUnsafeMutableBufferPointer { buffer in
+            guard let base = buffer.baseAddress else { return }
+            var offset = 0
+            while offset < buffer.count {
+                let frames = min(256, buffer.count - offset)
+                reducer.isVoiced = offset >= voicedFrom
+                reducer.process(base + offset, frameCount: frames)
+                offset += frames
+            }
+        }
+        return output
+    }
+
+    private func level(_ samples: [Float], from low: Float, to high: Float) -> Float {
+        let highPass = Biquad(sampleRate: Signal.sampleRate)
+        highPass.configure(kind: .highpass, frequency: low, q: 0.707)
+        let lowPass = Biquad(sampleRate: Signal.sampleRate)
+        lowPass.configure(kind: .lowpass, frequency: high, q: 0.707)
+        return Signal.rms(lowPass.process(highPass.process(samples)))
+    }
+
+    /// A second of room tone, then the same room tone with a tone over it.
+    private func toneOverNoise(toneAmplitude: Float, noiseAmplitude: Float) -> (signal: [Float], half: Int) {
+        let frames = 192000
+        var signal = Signal.noise(frames: frames, amplitude: noiseAmplitude)
+        let tone = Signal.sine(frequency: 1000, frames: frames, amplitude: toneAmplitude)
+        for i in (frames / 2)..<frames { signal[i] += tone[i] }
+        return (signal, frames / 2)
+    }
+
+    /// Subtracting in power rather than in amplitude is what separates cleaning
+    /// a signal from thinning it, and it had nothing holding it in place.
+    ///
+    /// Measured where the two diverge most — a tone only a little above the
+    /// floor. Subtracting the estimate from the amplitude instead costs 6.7 dB
+    /// here against 2.9; forgetting the square root alone costs 3.8.
+    func testSpeechIsNotThinnedOutAlongWithTheNoise() {
+        let (signal, half) = toneOverNoise(toneAmplitude: 0.05, noiseAmplitude: 0.05)
+        let output = reduce(signal, strength: 0.7, voicedFrom: half)
+
+        let window = (half + 24000)...
+        let before = level(Array(signal[window]), from: 900, to: 1200)
+        let after = level(Array(output[window]), from: 900, to: 1200)
+        let lost = -20 * log10f(after / before)
+
+        XCTAssertLessThan(lost, 3.4, "the signal was thinned, not cleaned: lost \(lost) dB")
+        XCTAssertGreaterThan(lost, 0, "nothing happened at all, so this proves nothing")
+    }
+
+    /// Removing exactly the estimate leaves the noise audibly present, because
+    /// the estimate is an average and the noise moves around it. Without the
+    /// over-subtraction the same room tone comes out 10.4 dB down instead of
+    /// 15.5.
+    func testTheRoomToneIsRemovedRatherThanHalved() {
+        let (signal, half) = toneOverNoise(toneAmplitude: 0.3, noiseAmplitude: 0.03)
+        let output = reduce(signal, strength: 0.7, voicedFrom: half)
+
+        let quiet = 24000..<half
+        let before = level(Array(signal[quiet]), from: 900, to: 1200)
+        let after = level(Array(output[quiet]), from: 900, to: 1200)
+        let cut = -20 * log10f(after / before)
+
+        XCTAssertGreaterThan(cut, 13, "the floor was only halved: cut \(cut) dB")
+    }
 }

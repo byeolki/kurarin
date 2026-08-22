@@ -97,6 +97,68 @@ final class TransientSuppressorTests: XCTestCase {
         XCTAssertLessThan(after, before * 0.85)
     }
 
+    /// The class claims two separate concessions to voicing: the threshold
+    /// rises, and the ducking shallows. Both are the difference between this
+    /// and a level gate, and neither was checked.
+    ///
+    /// Measured on the same signal at the same strength, changing nothing but
+    /// the voicing verdict, so the only thing that can move the result is the
+    /// pair of numbers under test.
+    func testVoicingRaisesTheThresholdBeforeAnythingIsDucked() {
+        // Sized to sit between the two thresholds: 3.5 times the reference
+        // catches it, 4.5 does not. That gap is narrow, so the amplitude was
+        // found by sweeping rather than reasoned about — anything from 0.05 up
+        // clears both and only the depth is left to tell them apart.
+        var samples = Signal.noise(frames: 24000, amplitude: 0.02)
+        click(at: 12000, in: &samples, amplitude: 0.03)
+
+        let unvoiced = processStreaming(suppressor(strength: 1, voiced: false), samples)
+        let voiced = processStreaming(suppressor(strength: 1, voiced: true), samples)
+
+        let window = 11800..<13000
+        let original = Signal.peak(Array(samples[window]))
+        let unvoicedPeak = Signal.peak(Array(unvoiced[window]))
+        let voicedPeak = Signal.peak(Array(voiced[window]))
+
+        // The signature of the threshold, rather than of the shallower duck
+        // that comes with it: while voiced this is not attenuated at all, not
+        // merely attenuated less.
+        XCTAssertEqual(
+            voicedPeak, original, accuracy: original * 0.02,
+            "a transient under the voiced threshold was ducked anyway"
+        )
+        XCTAssertLessThan(
+            unvoicedPeak, original * 0.7,
+            "the same transient was ignored while unvoiced, so the test proves nothing"
+        )
+    }
+
+    /// With a transient far over both thresholds, whether it is caught is no
+    /// longer the variable — how deep the duck goes is.
+    func testVoicingMakesTheDuckShallower() {
+        var samples = Signal.noise(frames: 24000, amplitude: 0.01)
+        click(at: 12000, in: &samples, amplitude: 0.9)
+
+        let unvoiced = processStreaming(suppressor(strength: 1, voiced: false), samples)
+        let voiced = processStreaming(suppressor(strength: 1, voiced: true), samples)
+
+        let window = 11800..<13000
+        let unvoicedPeak = Signal.peak(Array(unvoiced[window]))
+        let voicedPeak = Signal.peak(Array(voiced[window]))
+
+        // Both are ducked — this is not the threshold test.
+        let original = Signal.peak(Array(samples[window]))
+        XCTAssertLessThan(unvoicedPeak, original * 0.5, "the loud click was not ducked at all")
+        XCTAssertLessThan(voicedPeak, original * 0.8, "the loud click survived voicing untouched")
+
+        // At full strength the depths are 0.95 and 0.57, so the voiced duck
+        // leaves roughly eight times as much through.
+        XCTAssertGreaterThan(
+            voicedPeak, unvoicedPeak * 3,
+            "the duck is as deep while voiced as while not"
+        )
+    }
+
     func testOffLeavesTheSignalAloneApartFromItsDelay() {
         let unit = suppressor(strength: 0, voiced: false)
         let input = Signal.sine(frequency: 220, frames: 4800)
