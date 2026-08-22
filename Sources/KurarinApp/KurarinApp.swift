@@ -1,85 +1,40 @@
 import AppKit
 import SwiftUI
 
-@main
-struct KurarinApp: App {
-    @StateObject private var model = AppModel()
+/// Owns everything that outlives a window.
+///
+/// The menu bar item is AppKit, so the app's model and its one window are held
+/// here rather than in a SwiftUI scene: a `MenuBarExtra` cannot tell a left
+/// click from a right one, and telling them apart is the point.
+@MainActor
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    let model = AppModel()
+    private var statusItem: StatusItemController?
 
-    var body: some Scene {
-        // The menu bar is the primary surface: quick toggles have to be
-        // reachable without leaving a game, and the window is for setup.
-        MenuBarExtra {
-            MenuBarContent()
-                .environmentObject(model)
-        } label: {
-            Image(systemName: model.isRunning
-                ? (model.isMuted ? "mic.slash.fill" : "waveform")
-                : "waveform.slash")
-        }
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        statusItem = StatusItemController(model: model)
+    }
 
-        Window("Kurarin", id: "main") {
-            MainWindow()
-                .environmentObject(model)
-                .frame(minWidth: 620, minHeight: 460)
-        }
-        .windowResizability(.contentMinSize)
+    /// Closing the window does not quit an app that lives in the menu bar.
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        false
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        model.stop()
     }
 }
 
-// MARK: - Menu bar
+@main
+struct KurarinApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
 
-struct MenuBarContent: View {
-    @EnvironmentObject private var model: AppModel
-    @Environment(\.openWindow) private var openWindow
-
-    var body: some View {
-        Button(model.isRunning ? "Stop" : "Start") { model.toggleRunning() }
-
-        if model.isRunning {
-            Toggle("Mute microphone", isOn: $model.isMuted)
-            Toggle("Voice effect", isOn: $model.isEffectEnabled)
-            Toggle("Hear myself", isOn: $model.monitorVoice)
-        }
-
-        Divider()
-
-        Menu("Preset") {
-            ForEach(model.presets) { preset in
-                Button {
-                    model.selectPreset(preset)
-                } label: {
-                    if preset.id == model.selectedPresetID {
-                        Label(preset.name, systemImage: "checkmark")
-                    } else {
-                        Text(preset.name)
-                    }
-                }
-            }
-        }
-
-        if model.slots.contains(where: { $0 != nil }) {
-            Menu("Soundboard") {
-                ForEach(Array(model.slots.enumerated()), id: \.offset) { index, slot in
-                    if let slot {
-                        Button(slot.name) { model.playSlot(index) }
-                    }
-                }
-                Divider()
-                Button("Stop all sounds") { model.stopAllSounds() }
-            }
-        }
-
-        Divider()
-
-        Button("Settings…") {
-            openWindow(id: "main")
-            NSApp.activate(ignoringOtherApps: true)
-        }
-        Button("Quit Kurarin") {
-            model.stop()
-            NSApp.terminate(nil)
-        }
-        .keyboardShortcut("q")
+    /// No scene of its own. The window is an `NSWindow` the status item makes
+    /// when it is first asked for, so SwiftUI needs only something to satisfy
+    /// the protocol — and an empty Settings scene is the one that adds no menu
+    /// item, no window and no Dock behaviour.
+    var body: some Scene {
+        Settings { EmptyView() }
     }
 }
 
