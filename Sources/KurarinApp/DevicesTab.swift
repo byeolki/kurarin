@@ -90,18 +90,39 @@ struct DevicesTab: View {
                             .frame(width: 8, height: 8)
                         Text("Recording")
                             .foregroundStyle(.secondary)
-                    } else if model.recordingNeedsPermission {
-                        Button("Open Screen Recording settings") {
-                            model.openScreenRecordingSettings()
-                        }
                     } else if model.recordingURL != nil {
                         Button("Show in Finder") { model.revealRecording() }
                     }
+
+                    Spacer()
+                    Button("Open folder") { model.revealRecordingFolder() }
                 }
 
-                Text("Records the screen with the mix your listeners hear — the transformed voice, the soundboard and anything you are sharing. Not what comes out of your own headphones. Saved to Movies.")
+                Text("Records the screen with the mix your listeners hear — the transformed voice, the soundboard and anything you are sharing. Not what comes out of your own headphones.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+
+                Text("Saved to \(model.recordingFolder.path)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+
+                // Said before the button is pressed rather than after it fails.
+                // macOS will not ask twice, and for an ad-hoc signed app it does
+                // not ask at all, so there is nothing to discover by trying.
+                if model.recordingNeedsPermission {
+                    HStack(spacing: 6) {
+                        Label(
+                            "macOS has not granted screen recording to Kurarin. Turn it on, then come back.",
+                            systemImage: "exclamationmark.triangle.fill"
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+
+                        Button("Open settings") { model.openScreenRecordingSettings() }
+                            .controlSize(.small)
+                    }
+                }
             }
 
             Section("Monitoring") {

@@ -6,6 +6,7 @@ import Combine
 import KurarinDSP
 import KurarinEngine
 import KurarinPresets
+import CoreGraphics
 import KurarinRecording
 import KurarinSoundboard
 
@@ -412,6 +413,11 @@ final class AppModel: ObservableObject {
     }
 
     private func pollMeters() {
+        // Before the guard: this is something the user goes and does while the
+        // engine is stopped, and the interface has to notice when they come
+        // back rather than only after they press Start.
+        refreshRecordingPermission()
+
         guard isRunning else {
             if isInputClipping { isInputClipping = false }
             return
@@ -809,8 +815,7 @@ final class AppModel: ObservableObject {
             return
         }
 
-        let directory = FileManager.default.urls(for: .moviesDirectory, in: .userDomainMask).first
-            ?? FileManager.default.temporaryDirectory
+        let directory = recordingFolder
         let stamp = DateFormatter()
         stamp.dateFormat = "yyyy-MM-dd HH.mm.ss"
         let url = directory.appendingPathComponent("Kurarin \(stamp.string(from: Date())).mov")
@@ -858,9 +863,36 @@ final class AppModel: ObservableObject {
         NSWorkspace.shared.open(url)
     }
 
-    /// True once a recording has been refused, so the interface can offer the
-    /// settings pane rather than showing the button that just failed.
+    /// Whether macOS will let us record at all, checked rather than discovered
+    /// by failing.
+    ///
+    /// Worth showing before the button is pressed. The permission cannot be
+    /// asked for twice — macOS remembers the first answer, and for an app it
+    /// has not seen signed the same way before it declines to ask at all — so
+    /// somebody who has not granted it needs telling that, not a button that
+    /// looks like it works.
     @Published private(set) var recordingNeedsPermission = false
+
+    /// Where recordings go. Shown so the answer is visible before there is
+    /// anything in it, which is when people look.
+    var recordingFolder: URL {
+        FileManager.default.urls(for: .moviesDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+    }
+
+    func revealRecordingFolder() {
+        NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: recordingFolder.path)
+    }
+
+    /// Cheap enough to run on the meter timer, but not thirty times a second.
+    private func refreshRecordingPermission() {
+        permissionTicks += 1
+        guard permissionTicks % 30 == 0 else { return }
+        let needed = !CGPreflightScreenCaptureAccess()
+        if needed != recordingNeedsPermission { recordingNeedsPermission = needed }
+    }
+
+    private var permissionTicks = 0
 
     func revealRecording() {
         guard let recordingURL else { return }
