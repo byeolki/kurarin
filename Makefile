@@ -11,6 +11,20 @@ FRAMEWORKS     := -framework CoreAudio -framework CoreFoundation
 
 .PHONY: all driver app test clean install-driver uninstall-driver
 
+# Signs with a real identity when the machine has one, and ad-hoc otherwise.
+#
+# This is not about distribution — nothing here is notarised — it is about
+# macOS's privacy grants. TCC identifies an application by its signature, and an
+# ad-hoc one changes with every build, so screen recording has to be granted
+# again after each rebuild and the permission silently stops applying. Any
+# stable identity fixes that; which one does not matter. A clone on a machine
+# with no certificate falls back to ad-hoc and works exactly as before, minus
+# the sticky permission.
+# The certificate's fingerprint rather than its name, which contains spaces
+# and brackets and would need quoting through two levels of shell.
+SIGN_IDENTITY ?= $(shell security find-identity -v -p codesigning 2>/dev/null | grep -oE '[0-9A-F]{40}' | head -1)
+CODESIGN_AS   := $(if $(SIGN_IDENTITY),$(SIGN_IDENTITY),-)
+
 # Clears the extended attributes off a bundle and signs it, retrying because
 # clearing them is not final.
 #
@@ -21,11 +35,15 @@ FRAMEWORKS     := -framework CoreAudio -framework CoreFoundation
 # quarantined plug-in during its scan, logs nothing, and the device simply
 # never appears. So both are cleared, and the pair is attempted until it takes.
 # (xattr has no -r flag, hence find.)
+# $(2) is the identity: the app wants a stable one so its privacy grants
+# survive a rebuild, the driver deliberately stays ad-hoc — it needs no
+# permissions, and how a bundle loaded inside coreaudiod is signed is not
+# something to change without a reason.
 define sign_bundle
 	@attempt=1; \
 	while [ $$attempt -le 8 ]; do \
 		find $(1) -exec xattr -c {} + 2>/dev/null; \
-		if codesign --force --sign - --timestamp=none $(1) 2>/dev/null; then \
+		if codesign --force --sign "$(2)" --timestamp=none $(1) 2>/dev/null; then \
 			echo "signed $(1)"; \
 			exit 0; \
 		fi; \
@@ -45,7 +63,7 @@ $(DRIVER_BINARY): Driver/KurarinDriver.c Driver/Info.plist
 	@mkdir -p $(DRIVER_BUNDLE)/Contents/MacOS
 	cp Driver/Info.plist $(DRIVER_BUNDLE)/Contents/Info.plist
 	clang $(CFLAGS) -bundle $(FRAMEWORKS) -o $@ Driver/KurarinDriver.c
-	$(call sign_bundle,$(DRIVER_BUNDLE))
+	$(call sign_bundle,$(DRIVER_BUNDLE),-)
 
 # --- application ----------------------------------------------------------
 
@@ -59,7 +77,7 @@ $(APP_BINARY): $(shell find Sources -name '*.swift' 2>/dev/null) Resources/App-I
 	@mkdir -p $(APP_BUNDLE)/Contents/MacOS $(APP_BUNDLE)/Contents/Resources
 	cp Resources/App-Info.plist $(APP_BUNDLE)/Contents/Info.plist
 	cp .build/apple/Products/Release/KurarinApp $@
-	$(call sign_bundle,$(APP_BUNDLE))
+	$(call sign_bundle,$(APP_BUNDLE),$(CODESIGN_AS))
 
 # --- checks ---------------------------------------------------------------
 
