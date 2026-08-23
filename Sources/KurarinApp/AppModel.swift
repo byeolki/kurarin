@@ -845,6 +845,12 @@ final class AppModel: ObservableObject {
             return
         }
 
+        // Says which of the two silences it was, if the recording is quiet:
+        // nothing playing, or the capture not working.
+        if recorder.systemSamplesSeen == 0 {
+            report("Recorded, but macOS sent no system audio — the computer's own sound will be missing.")
+        }
+
         let lost = recorder.droppedSamples
         if let url = recordingURL {
             if lost > 0 {
@@ -899,6 +905,18 @@ final class AppModel: ObservableObject {
     }
 
     private var permissionTicks = 0
+
+    /// Used when the app is going away and there is no interface left to tell.
+    ///
+    /// Synchronous on purpose: the caller is `applicationWillTerminate`, which
+    /// runs on the main thread, and anything that waits there for main-actor
+    /// work to complete waits for itself.
+    func finishRecordingForQuit() {
+        guard isRecording else { return }
+        engine.isCapturingForRecording = false
+        recorder.finishSynchronously()
+        isRecording = false
+    }
 
     func revealRecording() {
         guard let recordingURL else { return }

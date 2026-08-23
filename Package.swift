@@ -14,7 +14,7 @@ let package = Package(
         .target(name: "KurarinAllocProbe"),
         .target(name: "KurarinDSP", dependencies: ["KurarinAtomics"]),
         .target(name: "KurarinPresets", dependencies: ["KurarinDSP"]),
-        .target(name: "KurarinRecording", dependencies: ["KurarinAtomics"]),
+        .target(name: "KurarinRecording", dependencies: ["KurarinAtomics", "KurarinDSP"]),
         .target(name: "KurarinSoundboard", dependencies: ["KurarinDSP", "KurarinAtomics"]),
         .target(name: "KurarinEngine", dependencies: ["KurarinDSP", "KurarinPresets", "KurarinSoundboard", "KurarinRecording"]),
         .executableTarget(name: "KurarinApp", dependencies: ["KurarinEngine", "KurarinPresets", "KurarinSoundboard", "KurarinRecording"]),

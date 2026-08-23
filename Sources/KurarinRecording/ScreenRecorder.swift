@@ -1,6 +1,7 @@
 @preconcurrency import AVFoundation
 import CoreGraphics
 import Foundation
+import KurarinDSP
 import ScreenCaptureKit
 
 public enum RecordingError: Error, LocalizedError {
@@ -42,11 +43,32 @@ public final class ScreenRecorder: NSObject, @unchecked Sendable {
     /// recording and never has to be handed across threads.
     public let audio: SampleRing
 
+    /// What the computer is playing, from ScreenCaptureKit.
+    ///
+    /// Needed as well as the voice, not instead of it. The transformed voice
+    /// never reaches the speakers — it goes to the virtual microphone — so
+    /// nothing capturing system output can hear it, and a recording made only
+    /// that way has a picture of a game with no one talking over it. The two
+    /// are added together on the way to the file.
+    private let systemAudio = SampleRing()
+    /// Read into while mixing, on the way out.
+    private var systemScratch: UnsafeMutablePointer<Float>
+    /// Written into while taking a channel out of an interleaved block, on the
+    /// way in. Separate from the one above so that neither has to know when the
+    /// other is in use.
+    private var downmix: UnsafeMutablePointer<Float>
+
     private var stream: SCStream?
     private var writer: AVAssetWriter?
     private var videoInput: AVAssetWriterInput?
     private var audioInput: AVAssetWriterInput?
     private var audioFormat: CMAudioFormatDescription?
+
+    /// The two sources are each within range on their own and can be over it
+    /// together: the voice mix arrives limited to half a decibel under full
+    /// scale, and whatever the computer is playing is added on top of that.
+    /// Measured at 1.01 before this was here, which the AAC encoder clips.
+    private let limiter: Limiter
 
     private let sampleRate: Double
     private let queue = DispatchQueue(label: "com.byeolki.kurarin.recording")
@@ -64,14 +86,23 @@ public final class ScreenRecorder: NSObject, @unchecked Sendable {
     public init(audio: SampleRing, sampleRate: Double = 48000) {
         self.sampleRate = sampleRate
         self.audio = audio
+        limiter = Limiter(sampleRate: Float(sampleRate))
         scratch = UnsafeMutablePointer<Float>.allocate(capacity: scratchCapacity)
         scratch.initialize(repeating: 0, count: scratchCapacity)
+        systemScratch = UnsafeMutablePointer<Float>.allocate(capacity: scratchCapacity)
+        systemScratch.initialize(repeating: 0, count: scratchCapacity)
+        downmix = UnsafeMutablePointer<Float>.allocate(capacity: scratchCapacity)
+        downmix.initialize(repeating: 0, count: scratchCapacity)
         super.init()
     }
 
     deinit {
         scratch.deinitialize(count: scratchCapacity)
         scratch.deallocate()
+        systemScratch.deinitialize(count: scratchCapacity)
+        systemScratch.deallocate()
+        downmix.deinitialize(count: scratchCapacity)
+        downmix.deallocate()
     }
 
     // MARK: - Lifecycle
@@ -102,6 +133,13 @@ public final class ScreenRecorder: NSObject, @unchecked Sendable {
 
         try? FileManager.default.removeItem(at: url)
         let writer = try AVAssetWriter(outputURL: url, fileType: .mov)
+        // A QuickTime file keeps the index that makes it playable at the end,
+        // written when the recording is finished — so anything that stops the
+        // app before that leaves a file of the right size that will not open.
+        // Fragments close that index every second instead, which costs a little
+        // size and means a recording interrupted by a crash, a force quit or a
+        // power cut still plays up to its last second.
+        writer.movieFragmentInterval = CMTime(seconds: 1, preferredTimescale: 600)
 
         let video = AVAssetWriterInput(mediaType: .video, outputSettings: [
             AVVideoCodecKey: AVVideoCodecType.h264,
@@ -130,7 +168,10 @@ public final class ScreenRecorder: NSObject, @unchecked Sendable {
         self.audioFormat = ScreenRecorder.monoFormat(sampleRate: sampleRate)
         samplesWritten = 0
         startedAt = .invalid
+        systemSamplesSeen = 0
+        limiter.reset()
         audio.reset()
+        systemAudio.reset()
 
         let filter = SCContentFilter(display: display, excludingWindows: [])
         let configuration = SCStreamConfiguration()
@@ -139,11 +180,18 @@ public final class ScreenRecorder: NSObject, @unchecked Sendable {
         configuration.minimumFrameInterval = CMTime(value: 1, timescale: 30)
         configuration.queueDepth = 6
         configuration.showsCursor = true
-        // Audio is ours, so ScreenCaptureKit is asked for pictures only.
-        configuration.capturesAudio = false
+        // The computer's own sound: the game, the music, the call. Excluding
+        // our own process keeps the soundboard and the monitoring out of it —
+        // the soundboard is already in the mix we supply, and the monitoring is
+        // the user's own voice coming back, which would double it.
+        configuration.capturesAudio = true
+        configuration.excludesCurrentProcessAudio = true
+        configuration.sampleRate = Int(sampleRate)
+        configuration.channelCount = 1
 
         let stream = SCStream(filter: filter, configuration: configuration, delegate: nil)
         try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: queue)
+        try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: queue)
         try await stream.startCapture()
         self.stream = stream
 
@@ -156,6 +204,60 @@ public final class ScreenRecorder: NSObject, @unchecked Sendable {
     /// every sample and still end in `.failed`, so finishing is not the same
     /// as succeeding and has to be asked about.
     public private(set) var failure: RecordingError?
+
+    /// Closes the file from a thread that is about to be taken away.
+    ///
+    /// The async `stop` cannot be used while quitting: it hops to the main
+    /// actor, and anything waiting for it there has already blocked the thread
+    /// that would run it. This finishes on AVFoundation's own queue and waits
+    /// on a semaphore, which is safe from any thread including that one.
+    public func finishSynchronously(timeout: TimeInterval = 5) {
+        guard isRecording else { return }
+        isRecording = false
+
+        if let stream {
+            let stopped = DispatchSemaphore(value: 0)
+            stream.stopCapture { _ in stopped.signal() }
+            _ = stopped.wait(timeout: .now() + 2)
+        }
+        self.stream = nil
+        audioTimer?.cancel()
+        audioTimer = nil
+
+        queue.sync { drainAudio() }
+
+        guard let writer, writer.status == .writing else {
+            outputURL = nil
+            self.writer = nil
+            return
+        }
+        videoInput?.markAsFinished()
+        audioInput?.markAsFinished()
+
+        let finished = DispatchSemaphore(value: 0)
+        writer.finishWriting { finished.signal() }
+        _ = finished.wait(timeout: .now() + timeout)
+
+        if writer.status != .completed, let url = outputURL {
+            try? FileManager.default.removeItem(at: url)
+            outputURL = nil
+        }
+        self.writer = nil
+        videoInput = nil
+        audioInput = nil
+    }
+
+    /// Drops everything without finishing the file, the way a process being
+    /// killed does. Only for proving that a recording survives that.
+    func abandonForTesting() {
+        isRecording = false
+        audioTimer?.cancel()
+        audioTimer = nil
+        stream = nil
+        writer = nil
+        videoInput = nil
+        audioInput = nil
+    }
 
     public func stop() async {
         guard isRecording else { return }
@@ -217,6 +319,13 @@ public final class ScreenRecorder: NSObject, @unchecked Sendable {
     /// Samples the recorder lost because the writer fell behind.
     public var droppedSamples: Int { audio.dropped }
 
+    /// How much of the computer's own sound arrived while recording.
+    ///
+    /// Zero means ScreenCaptureKit handed over nothing at all, which is a
+    /// different fault from handing over silence — the first is the capture not
+    /// working, the second is nothing having been playing.
+    public private(set) var systemSamplesSeen = 0
+
     // MARK: - Audio
 
     /// The ring is drained on a timer rather than when video frames arrive: a
@@ -236,6 +345,15 @@ public final class ScreenRecorder: NSObject, @unchecked Sendable {
         while audio.available > 0, input.isReadyForMoreMediaData {
             let count = audio.read(into: scratch, count: scratchCapacity)
             guard count > 0 else { break }
+
+            // Whatever the computer was playing over the same span, added in.
+            // Paired by count rather than by timestamp: both sides are fed from
+            // the same run of real time and neither can get ahead without the
+            // other's ring reporting it, which is what droppedSamples is for.
+            let system = systemAudio.read(into: systemScratch, count: count)
+            for i in 0..<system { scratch[i] += systemScratch[i] }
+            limiter.process(scratch, frameCount: count)
+
             if let buffer = makeSampleBuffer(count: count, format: format) {
                 input.append(buffer)
             }
@@ -274,6 +392,46 @@ public final class ScreenRecorder: NSObject, @unchecked Sendable {
         return sample
     }
 
+    /// Copies one block of the computer's own sound into its ring.
+    ///
+    /// Asked for as mono at the engine's rate, so no conversion should be
+    /// needed — but the configuration is a request rather than a guarantee, so
+    /// anything arriving with more than one channel has its first taken rather
+    /// than being interpreted as twice as much mono.
+    private func takeSystemAudio(_ buffer: CMSampleBuffer) {
+        guard let description = CMSampleBufferGetFormatDescription(buffer),
+              let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(description)?.pointee
+        else { return }
+
+        var blockBuffer: CMBlockBuffer?
+        var list = AudioBufferList()
+        let status = CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer(
+            buffer,
+            bufferListSizeNeededOut: nil,
+            bufferListOut: &list,
+            bufferListSize: MemoryLayout<AudioBufferList>.size,
+            blockBufferAllocator: kCFAllocatorDefault,
+            blockBufferMemoryAllocator: kCFAllocatorDefault,
+            flags: kCMSampleBufferFlag_AudioBufferList_Assure16ByteAlignment,
+            blockBufferOut: &blockBuffer
+        )
+        guard status == noErr, let data = list.mBuffers.mData else { return }
+
+        let channels = max(Int(asbd.mChannelsPerFrame), 1)
+        let frames = Int(list.mBuffers.mDataByteSize) / (MemoryLayout<Float>.size * channels)
+        guard frames > 0 else { return }
+
+        systemSamplesSeen += frames
+        let samples = data.assumingMemoryBound(to: Float.self)
+        if channels == 1 {
+            systemAudio.write(samples, count: frames)
+        } else {
+            let taking = min(frames, scratchCapacity)
+            for i in 0..<taking { downmix[i] = samples[i * channels] }
+            systemAudio.write(downmix, count: taking)
+        }
+    }
+
     private static func monoFormat(sampleRate: Double) -> CMAudioFormatDescription? {
         var description = AudioStreamBasicDescription(
             mSampleRate: sampleRate,
@@ -294,7 +452,13 @@ public final class ScreenRecorder: NSObject, @unchecked Sendable {
 
 extension ScreenRecorder: SCStreamOutput {
     public func stream(_ stream: SCStream, didOutputSampleBuffer buffer: CMSampleBuffer, of type: SCStreamOutputType) {
-        guard type == .screen, isRecording, CMSampleBufferGetNumSamples(buffer) > 0 else { return }
+        guard isRecording, CMSampleBufferGetNumSamples(buffer) > 0 else { return }
+
+        if type == .audio {
+            takeSystemAudio(buffer)
+            return
+        }
+        guard type == .screen else { return }
         guard let writer, let input = videoInput else { return }
 
         // Both tracks are timed from the first frame that actually arrives.

@@ -92,4 +92,41 @@ final class ScreenRecorderTests: XCTestCase {
         XCTAssertFalse(recorder.isRecording)
         XCTAssertNil(recorder.outputURL, "a recording that never began still reports a file")
     }
+
+    /// A recording the app never got to finish.
+    ///
+    /// The index a QuickTime file needs to be playable is written at the end,
+    /// so anything that stops the process first — a crash, a force quit, the
+    /// power going — used to leave a file of plausible size that would not
+    /// open. Writing it in fragments closes that index every second instead.
+    ///
+    /// Simulated by abandoning the writer rather than killing the process:
+    /// what matters is that nothing finished the file, which is the same
+    /// condition.
+    func testAnUnfinishedRecordingStillPlays() async throws {
+        let recorder = ScreenRecorder(audio: SampleRing())
+        do {
+            try await recorder.start(to: url)
+        } catch RecordingError.permissionDenied {
+            throw XCTSkip("Screen recording permission has not been granted to the test runner.")
+        }
+
+        // Long enough for several fragments to have been closed.
+        var block = [Float](repeating: 0.2, count: 256)
+        for _ in 0..<(48000 * 3 / 256) {
+            block.withUnsafeBufferPointer { buffer in
+                guard let base = buffer.baseAddress else { return }
+                recorder.audio.write(base, count: 256)
+            }
+            try await Task.sleep(nanoseconds: UInt64(256.0 / 48000 * 1e9))
+        }
+
+        recorder.abandonForTesting()
+
+        let asset = AVURLAsset(url: url)
+        let duration = try await asset.load(.duration).seconds
+        XCTAssertGreaterThan(duration, 0.5, "nothing survived the interruption")
+        let video = try await asset.loadTracks(withMediaType: .video)
+        XCTAssertEqual(video.count, 1)
+    }
 }

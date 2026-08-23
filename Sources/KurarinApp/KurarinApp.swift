@@ -20,7 +20,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         false
     }
 
+    /// A recording abandoned mid-file is unplayable: the index a QuickTime
+    /// file needs is written when the recording is finished, not as it goes.
+    /// Quitting is a normal way to stop, so it waits — briefly, and bounded,
+    /// because a quit that appears to hang is worse than a lost recording.
     func applicationWillTerminate(_ notification: Notification) {
+        model.finishRecordingForQuit()
         model.stop()
     }
 }
