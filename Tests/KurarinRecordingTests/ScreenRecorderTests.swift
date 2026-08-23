@@ -52,6 +52,7 @@ final class ScreenRecorderTests: XCTestCase {
 
         await recorder.stop()
         XCTAssertFalse(recorder.isRecording)
+        XCTAssertNil(recorder.failure, "the writer did not complete")
 
         // The file has to exist, hold both kinds of track, and be about as long
         // as the audio that went into it.

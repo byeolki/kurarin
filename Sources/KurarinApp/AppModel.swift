@@ -839,6 +839,12 @@ final class AppModel: ObservableObject {
         await recorder.stop()
         isRecording = false
 
+        if let failure = recorder.failure {
+            recordingURL = nil
+            report(failure.localizedDescription)
+            return
+        }
+
         let lost = recorder.droppedSamples
         if let url = recordingURL {
             if lost > 0 {

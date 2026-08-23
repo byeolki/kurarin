@@ -7,6 +7,7 @@ public enum RecordingError: Error, LocalizedError {
     case noDisplay
     case permissionDenied
     case writerFailed(String)
+    case finishFailed(String)
 
     public var errorDescription: String? {
         switch self {
@@ -16,6 +17,8 @@ public enum RecordingError: Error, LocalizedError {
             return "Screen recording permission was refused. If no dialog appeared, macOS has remembered an earlier answer: turn Kurarin on in System Settings ▸ Privacy & Security ▸ Screen Recording, then try again."
         case .writerFailed(let reason):
             return "Could not write the recording: \(reason)."
+        case .finishFailed(let reason):
+            return "The recording could not be completed: \(reason). The file is unplayable."
         }
     }
 }
@@ -149,9 +152,15 @@ public final class ScreenRecorder: NSObject, @unchecked Sendable {
         startAudioPump()
     }
 
+    /// Why the last recording failed, if it did. AVAssetWriter can accept
+    /// every sample and still end in `.failed`, so finishing is not the same
+    /// as succeeding and has to be asked about.
+    public private(set) var failure: RecordingError?
+
     public func stop() async {
         guard isRecording else { return }
         isRecording = false
+        failure = nil
 
         audioTimer?.cancel()
         audioTimer = nil
@@ -193,6 +202,13 @@ public final class ScreenRecorder: NSObject, @unchecked Sendable {
         videoInput?.markAsFinished()
         audioInput?.markAsFinished()
         await writer.finishWriting()
+
+        if writer.status != .completed {
+            let reason = writer.error.map { String(describing: $0) } ?? "status \(writer.status.rawValue)"
+            failure = .finishFailed(reason)
+            if let url = outputURL { try? FileManager.default.removeItem(at: url) }
+            outputURL = nil
+        }
         self.writer = nil
         videoInput = nil
         audioInput = nil
@@ -296,6 +312,11 @@ extension ScreenRecorder: SCStreamOutput {
 
         if input.isReadyForMoreMediaData {
             input.append(buffer)
+        }
+        if writer.status == .failed {
+            // Carrying on appending to a writer that has given up produces a
+            // file that looks the right size and cannot be opened.
+            failure = .finishFailed(writer.error.map { String(describing: $0) } ?? "unknown")
         }
     }
 }
