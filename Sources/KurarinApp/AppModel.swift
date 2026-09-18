@@ -851,22 +851,44 @@ final class AppModel: ObservableObject {
             return
         }
 
+        // The encoder refusing frames is the one fault that leaves a valid
+        // file which is simply shorter than the time it was recording for, so
+        // it has to be said rather than left for the user to notice.
+        // Both are silent faults: the file comes out valid and simply shorter
+        // than the time it was recording for, which nobody notices until they
+        // play it back.
+        if let stopped = recorder.streamFailure {
+            report("Screen capture stopped: \(stopped)")
+        } else if recorder.framesDropped > 0, recorder.framesReceived > 0 {
+            let share = recorder.framesDropped * 100 / recorder.framesReceived
+            if share >= 5 {
+                report("The video may stutter: \(share)% of frames arrived faster than they could be encoded.")
+            }
+        }
+
         // Says which of the two silences it was, if the recording is quiet:
         // nothing playing, or the capture not working.
         if recorder.systemSamplesSeen == 0 {
             report("Recorded, but macOS sent no system audio — the computer's own sound will be missing.")
         }
 
+        // The recorder's own URL, not ours: it clears it when the file turned
+        // out to be unusable, and reporting a save from our stale copy is how
+        // an empty recording came to be announced as a success.
+        recordingURL = recorder.outputURL
+        guard let url = recordingURL else {
+            report("Nothing was recorded — no frames arrived from the screen.")
+            return
+        }
+
         let lost = recorder.droppedSamples
-        if let url = recordingURL {
-            if lost > 0 {
-                report(String(
-                    format: "Saved %@ — %.0f ms of sound was lost to a slow disk.",
-                    url.lastPathComponent, Double(lost) / 48.0
-                ))
-            } else {
-                report("Saved \(url.lastPathComponent) to Movies.", warning: false)
-            }
+        if lost > 0 {
+            report(String(
+                format: "Saved %@ — %.0f ms of sound was lost to a slow disk.",
+                url.lastPathComponent, Double(lost) / 48.0
+            ))
+        } else {
+            report("Saved \(url.lastPathComponent) to Movies.", warning: false)
         }
     }
 

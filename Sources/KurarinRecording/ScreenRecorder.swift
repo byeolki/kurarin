@@ -169,6 +169,12 @@ public final class ScreenRecorder: NSObject, @unchecked Sendable {
         samplesWritten = 0
         startedAt = .invalid
         systemSamplesSeen = 0
+        framesReceived = 0
+        framesDropped = 0
+        framesRepeated = 0
+        streamFailure = nil
+        lastFrame = nil
+        lastFrameAt = .invalid
         limiter.reset()
         audio.reset()
         systemAudio.reset()
@@ -189,7 +195,10 @@ public final class ScreenRecorder: NSObject, @unchecked Sendable {
         configuration.sampleRate = Int(sampleRate)
         configuration.channelCount = 1
 
-        let stream = SCStream(filter: filter, configuration: configuration, delegate: nil)
+        // A delegate, so that a stream which stops on its own says so. Without
+        // one the frames simply cease and the recording quietly becomes a
+        // still picture for the rest of its length.
+        let stream = SCStream(filter: filter, configuration: configuration, delegate: self)
         try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: queue)
         try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: queue)
         try await stream.startCapture()
@@ -262,7 +271,6 @@ public final class ScreenRecorder: NSObject, @unchecked Sendable {
     public func stop() async {
         guard isRecording else { return }
         isRecording = false
-        failure = nil
 
         audioTimer?.cancel()
         audioTimer = nil
@@ -294,6 +302,16 @@ public final class ScreenRecorder: NSObject, @unchecked Sendable {
         // is what never happened. Only the URL needs forgetting, so that
         // "Show in Finder" does not point at nothing.
         guard let writer, writer.status == .writing else {
+            // Say which it was. A writer that never started and one that gave
+            // up part way through are different faults and the difference is
+            // invisible from the file.
+            if let writer, failure == nil {
+                failure = .finishFailed(
+                    writer.error.map { String(describing: $0) }
+                        ?? "the writer was in state \(writer.status.rawValue) rather than writing"
+                )
+            }
+            if let url = outputURL { try? FileManager.default.removeItem(at: url) }
             outputURL = nil
             self.writer = nil
             videoInput = nil
@@ -326,6 +344,33 @@ public final class ScreenRecorder: NSObject, @unchecked Sendable {
     /// working, the second is nothing having been playing.
     public private(set) var systemSamplesSeen = 0
 
+    /// Video frames handed to us, and the ones the encoder had no room for.
+    ///
+    /// A recording that stops part way through still ends with a valid file,
+    /// so the only visible symptom is a video that is shorter than the time it
+    /// was recording for. These say whether the frames stopped arriving or
+    /// stopped being accepted.
+    public private(set) var framesReceived = 0
+    public private(set) var framesDropped = 0
+    public private(set) var framesRepeated = 0
+    /// Set when ScreenCaptureKit gives up, which it otherwise does silently.
+    public private(set) var streamFailure: String?
+
+    /// The last frame that arrived, kept so it can be sent again.
+    ///
+    /// ScreenCaptureKit delivers a frame when the screen changes and says
+    /// nothing when it does not — a still desktop produces no frames at all.
+    /// Left alone that makes the video track as long as the last thing that
+    /// moved rather than as long as the recording: thirty seconds of recording
+    /// a static screen came out as a one second file, and a screen that never
+    /// changed came out empty.
+    private var lastFrame: CMSampleBuffer?
+    private var lastFrameAt: CMTime = .invalid
+    /// How long a still screen is allowed to go before the last frame is
+    /// repeated. Short enough that the track never falls far behind, long
+    /// enough that a moving screen never reaches it.
+    private static let stillFrameInterval = CMTime(value: 1, timescale: 3)
+
     // MARK: - Audio
 
     /// The ring is drained on a timer rather than when video frames arrive: a
@@ -334,13 +379,61 @@ public final class ScreenRecorder: NSObject, @unchecked Sendable {
     private func startAudioPump() {
         let timer = DispatchSource.makeTimerSource(queue: queue)
         timer.schedule(deadline: .now() + .milliseconds(50), repeating: .milliseconds(50))
-        timer.setEventHandler { [weak self] in self?.drainAudio() }
+        timer.setEventHandler { [weak self] in
+            self?.drainAudio()
+            self?.holdTheLastFrame()
+        }
         timer.resume()
         audioTimer = timer
     }
 
+    /// Sends the last frame again when the screen has stopped changing, so the
+    /// video track keeps pace with real time.
+    ///
+    /// The repeat is stamped one interval after the frame before it, not from
+    /// a clock read here: the frames carry ScreenCaptureKit's own timebase, and
+    /// a timestamp from a different one is either rejected — which fails the
+    /// whole writer — or silently out of order. Stepping along the existing
+    /// timeline keeps it monotonic by construction, and the pump runs often
+    /// enough that stepping at this interval tracks real time.
+    /// Records the first moment the writer is seen to have given up, and
+    /// where — it can fail on its own between appends, and only the first
+    /// report says anything about why.
+    private func noteFailure(where place: String) {
+        guard failure == nil, let writer, writer.status == .failed else { return }
+        failure = .finishFailed(
+            "\(place), \(String(format: "%.1f", Double(samplesWritten) / sampleRate))s in: "
+            + (writer.error.map { String(describing: $0) } ?? "no reason given")
+        )
+    }
+
+    private func holdTheLastFrame() {
+        guard isRecording,
+              let input = videoInput,
+              let frame = lastFrame,
+              lastFrameAt.isValid,
+              input.isReadyForMoreMediaData
+        else { return }
+
+        // How far the sound has got is the one measure of elapsed time this
+        // class can trust: it counts samples that actually happened.
+        let audioNow = CMTime(value: samplesWritten, timescale: CMTimeScale(sampleRate))
+        let next = CMTimeAdd(lastFrameAt, ScreenRecorder.stillFrameInterval)
+        guard CMTimeCompare(audioNow, next) > 0,
+              let repeated = ScreenRecorder.retimed(frame, to: next)
+        else { return }
+
+        if input.append(repeated) {
+            framesRepeated += 1
+            lastFrameAt = next
+        } else {
+            framesDropped += 1
+        }
+    }
+
     private func drainAudio() {
         guard let input = audioInput, let format = audioFormat, startedAt.isValid else { return }
+        noteFailure(where: "the sound")
 
         while audio.available > 0, input.isReadyForMoreMediaData {
             let count = audio.read(into: scratch, count: scratchCapacity)
@@ -355,40 +448,58 @@ public final class ScreenRecorder: NSObject, @unchecked Sendable {
             limiter.process(scratch, frameCount: count)
 
             if let buffer = makeSampleBuffer(count: count, format: format) {
-                input.append(buffer)
+                if !input.append(buffer) { noteFailure(where: "the sound") }
             }
             samplesWritten += Int64(count)
         }
     }
 
+    /// Wraps `scratch` as a sample buffer the writer will accept.
+    ///
+    /// Built empty and then filled from an `AudioBufferList`, rather than by
+    /// handing `CMSampleBufferCreate` a block buffer directly. The direct route
+    /// produces something that looks right, is accepted by the first append,
+    /// and fails the writer a fraction of a second later with nothing to say
+    /// but OSStatus -16122 — which cost most of an afternoon to find.
     private func makeSampleBuffer(count: Int, format: CMAudioFormatDescription) -> CMSampleBuffer? {
-        let bytes = count * MemoryLayout<Float>.size
-        var block: CMBlockBuffer?
-        guard CMBlockBufferCreateWithMemoryBlock(
-            allocator: kCFAllocatorDefault, memoryBlock: nil, blockLength: bytes,
-            blockAllocator: kCFAllocatorDefault, customBlockSource: nil,
-            offsetToData: 0, dataLength: bytes, flags: 0, blockBufferOut: &block
-        ) == noErr, let block else { return nil }
-
-        guard CMBlockBufferReplaceDataBytes(
-            with: scratch, blockBuffer: block, offsetIntoDestination: 0, dataLength: bytes
-        ) == noErr else { return nil }
-
         var timing = CMSampleTimingInfo(
             duration: CMTime(value: 1, timescale: CMTimeScale(sampleRate)),
-            presentationTimeStamp: CMTimeAdd(
-                startedAt,
-                CMTime(value: samplesWritten, timescale: CMTimeScale(sampleRate))
-            ),
+            presentationTimeStamp: CMTime(value: samplesWritten, timescale: CMTimeScale(sampleRate)),
             decodeTimeStamp: .invalid
         )
+
         var sample: CMSampleBuffer?
         guard CMSampleBufferCreate(
-            allocator: kCFAllocatorDefault, dataBuffer: block, dataReady: true,
-            makeDataReadyCallback: nil, refcon: nil, formatDescription: format,
-            sampleCount: count, sampleTimingEntryCount: 1, sampleTimingArray: &timing,
-            sampleSizeEntryCount: 0, sampleSizeArray: nil, sampleBufferOut: &sample
+            allocator: kCFAllocatorDefault,
+            dataBuffer: nil,
+            dataReady: false,
+            makeDataReadyCallback: nil,
+            refcon: nil,
+            formatDescription: format,
+            sampleCount: count,
+            sampleTimingEntryCount: 1,
+            sampleTimingArray: &timing,
+            sampleSizeEntryCount: 0,
+            sampleSizeArray: nil,
+            sampleBufferOut: &sample
+        ) == noErr, let sample else { return nil }
+
+        var list = AudioBufferList(
+            mNumberBuffers: 1,
+            mBuffers: AudioBuffer(
+                mNumberChannels: 1,
+                mDataByteSize: UInt32(count * MemoryLayout<Float>.size),
+                mData: UnsafeMutableRawPointer(scratch)
+            )
+        )
+        guard CMSampleBufferSetDataBufferFromAudioBufferList(
+            sample,
+            blockBufferAllocator: kCFAllocatorDefault,
+            blockBufferMemoryAllocator: kCFAllocatorDefault,
+            flags: 0,
+            bufferList: &list
         ) == noErr else { return nil }
+
         return sample
     }
 
@@ -432,6 +543,25 @@ public final class ScreenRecorder: NSObject, @unchecked Sendable {
         }
     }
 
+    /// A copy of `frame` presented at `time`. Metadata only — the pixels are
+    /// shared rather than copied.
+    private static func retimed(_ frame: CMSampleBuffer, to time: CMTime) -> CMSampleBuffer? {
+        var timing = CMSampleTimingInfo(
+            duration: .invalid,
+            presentationTimeStamp: time,
+            decodeTimeStamp: .invalid
+        )
+        var copy: CMSampleBuffer?
+        guard CMSampleBufferCreateCopyWithNewTiming(
+            allocator: kCFAllocatorDefault,
+            sampleBuffer: frame,
+            sampleTimingEntryCount: 1,
+            sampleTimingArray: &timing,
+            sampleBufferOut: &copy
+        ) == noErr else { return nil }
+        return copy
+    }
+
     private static func monoFormat(sampleRate: Double) -> CMAudioFormatDescription? {
         var description = AudioStreamBasicDescription(
             mSampleRate: sampleRate,
@@ -459,6 +589,19 @@ extension ScreenRecorder: SCStreamOutput {
             return
         }
         guard type == .screen else { return }
+
+        // ScreenCaptureKit delivers a frame on every tick of its clock, but
+        // only some of them carry an image. When the screen has not changed it
+        // sends one marked idle, with the pixels left out — and appending those
+        // is what was killing the writer a fraction of a second into every
+        // recording. Video on its own survives it; interleaved with audio the
+        // writer gives up with nothing to say but OSStatus -16122.
+        guard let attachments = CMSampleBufferGetSampleAttachmentsArray(buffer, createIfNecessary: false)
+                as? [[SCStreamFrameInfo: Any]],
+              let status = (attachments.first?[.status] as? Int).flatMap(SCFrameStatus.init(rawValue:)),
+              status == .complete,
+              CMSampleBufferGetImageBuffer(buffer) != nil
+        else { return }
         guard let writer, let input = videoInput else { return }
 
         // Both tracks are timed from the first frame that actually arrives.
@@ -470,17 +613,33 @@ extension ScreenRecorder: SCStreamOutput {
             guard writer.startWriting() else {
                 return
             }
-            writer.startSession(atSourceTime: first)
+            // The session runs from zero and both tracks are stamped by how
+            // far into the recording they are. Anchoring to the clock the
+            // frames arrived on works too, but it means every timestamp is a
+            // host time — nanoseconds since boot, a number in the quadrillions
+            // — added to a count of audio samples at 48 kHz, and nothing about
+            // the file is easier to reason about for it.
+            writer.startSession(atSourceTime: .zero)
             startedAt = first
         }
 
-        if input.isReadyForMoreMediaData {
-            input.append(buffer)
+        framesReceived += 1
+        noteFailure(where: "the picture")
+
+        let elapsed = CMTimeSubtract(CMSampleBufferGetPresentationTimeStamp(buffer), startedAt)
+        guard input.isReadyForMoreMediaData else {
+            framesDropped += 1
+            return
         }
-        if writer.status == .failed {
-            // Carrying on appending to a writer that has given up produces a
-            // file that looks the right size and cannot be opened.
-            failure = .finishFailed(writer.error.map { String(describing: $0) } ?? "unknown")
-        }
+        guard let stamped = ScreenRecorder.retimed(buffer, to: elapsed) else { return }
+        input.append(stamped)
+        lastFrame = stamped
+        lastFrameAt = elapsed
+    }
+}
+
+extension ScreenRecorder: SCStreamDelegate {
+    public func stream(_ stream: SCStream, didStopWithError error: Error) {
+        streamFailure = error.localizedDescription
     }
 }
