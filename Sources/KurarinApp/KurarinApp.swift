@@ -68,8 +68,9 @@ struct StatusBar: View {
             Button(model.isRunning ? "Stop" : "Start") { model.toggleRunning() }
                 .keyboardShortcut(.return)
 
-            LevelMeter(label: "In", level: model.inputLevel)
-            LevelMeter(label: "Out", level: model.outputLevel)
+            // Watching `meters` rather than the model: a bar that moves
+            // thirty times a second must not invalidate the window with it.
+            MeterPair(meters: model.meters)
 
             Spacer()
 
@@ -99,9 +100,23 @@ struct StatusBar: View {
 /// almost nothing, and a quiet-but-usable -30 dB — where a USB microphone with
 /// its gain knob down sits — is 3% of the width and reads as "broken". The
 /// scale runs from -60 dB, below which nothing is worth showing, to 0.
+/// The two bars in the status bar, kept in their own view so that only they
+/// are rebuilt when a level changes.
+struct MeterPair: View {
+    @ObservedObject var meters: Meters
+
+    var body: some View {
+        Group {
+            LevelMeter(label: "In", level: meters.input, decibels: meters.inputDecibels)
+            LevelMeter(label: "Out", level: meters.output, decibels: meters.outputDecibels)
+        }
+    }
+}
+
 struct LevelMeter: View {
     let label: String
     let level: Float
+    let decibels: Float
 
     /// A marker that hangs behind the bar, so a peak can be read after it has
     /// passed. Optional: only the input meter is something the user is aiming.
@@ -113,54 +128,63 @@ struct LevelMeter: View {
 
     private static let floorDB: Float = -60
 
-    private var decibels: Float {
-        level > 0 ? 20 * log10(level) : -.infinity
+    private static func position(ofDB db: Float) -> Double {
+        Double(min(max((db - floorDB) / -floorDB, 0), 1))
     }
 
-    private func position(ofDB db: Float) -> Double {
-        Double(min(max((db - LevelMeter.floorDB) / -LevelMeter.floorDB, 0), 1))
-    }
-
-    private var position: Double {
-        decibels.isFinite ? position(ofDB: decibels) : 0
+    private static func position(ofLevel level: Float) -> Double {
+        level > 0 ? position(ofDB: 20 * log10(level)) : 0
     }
 
     var body: some View {
         HStack(spacing: 4) {
             Text(label).font(.caption).foregroundStyle(.secondary)
 
-            GeometryReader { geometry in
-                let full = geometry.size.width
-                ZStack(alignment: .leading) {
-                    Capsule().fill(.quaternary)
-
-                    if showsTarget {
-                        let range = AppModel.comfortableRangeDB
-                        let start = position(ofDB: range.lowerBound) * full
-                        let end = position(ofDB: range.upperBound) * full
-                        Rectangle()
-                            .fill(.green.opacity(0.25))
-                            .frame(width: end - start)
-                            .offset(x: start)
-                    }
-
-                    Capsule()
-                        .fill(decibels > -3 ? Color.red : Color.accentColor)
-                        .frame(width: position * full)
-
-                    if let peak, peak > 0 {
-                        let peakDB = 20 * log10(peak)
-                        Rectangle()
-                            .fill(peakDB > -3 ? Color.red : Color.primary.opacity(0.6))
-                            .frame(width: 2)
-                            .offset(x: max(0, position(ofDB: peakDB) * full - 2))
-                    }
+            // Drawn rather than built out of views. A stack of shapes is laid
+            // out every time it changes, and a meter changes twenty times a
+            // second — which had AppKit walking the whole window's view tree
+            // at that rate and cost more than every other part of this program
+            // put together. A canvas of a fixed size only repaints.
+            Canvas { context, size in
+                let full = size.width
+                let radius = size.height / 2
+                func capsule(from x: Double, to end: Double) -> Path {
+                    Path(roundedRect: CGRect(x: x, y: 0, width: max(end - x, 0), height: size.height),
+                         cornerRadius: radius)
                 }
-                .clipShape(Capsule())
+
+                context.fill(capsule(from: 0, to: full), with: .color(.gray.opacity(0.25)))
+
+                if showsTarget {
+                    let range = AppModel.comfortableRangeDB
+                    let start = LevelMeter.position(ofDB: range.lowerBound) * full
+                    let end = LevelMeter.position(ofDB: range.upperBound) * full
+                    context.fill(
+                        Path(CGRect(x: start, y: 0, width: end - start, height: size.height)),
+                        with: .color(.green.opacity(0.25))
+                    )
+                }
+
+                let filled = LevelMeter.position(ofLevel: level) * full
+                if filled > 0 {
+                    context.fill(
+                        capsule(from: 0, to: filled),
+                        with: .color(decibels > -3 ? .red : .accentColor)
+                    )
+                }
+
+                if let peak, peak > 0 {
+                    let peakDB = 20 * log10(peak)
+                    let x = max(0, LevelMeter.position(ofDB: peakDB) * full - 2)
+                    context.fill(
+                        Path(CGRect(x: x, y: 0, width: 2, height: size.height)),
+                        with: .color(peakDB > -3 ? .red : .primary.opacity(0.6))
+                    )
+                }
             }
             .frame(width: width, height: 8)
 
-            Text(decibels.isFinite ? String(format: "%.0f", decibels) : "–")
+            Text(decibels.isFinite ? String(format: "%.0f", decibels) : "\u{2013}")
                 .font(.caption2)
                 .monospacedDigit()
                 .foregroundStyle(.secondary)

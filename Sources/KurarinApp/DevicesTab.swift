@@ -38,13 +38,7 @@ struct DevicesTab: View {
                     Slider(value: $model.inputTrimDB, in: -12...36)
 
                     HStack(spacing: 10) {
-                        LevelMeter(
-                            label: "In",
-                            level: model.inputLevel,
-                            peak: model.inputPeak,
-                            showsTarget: true,
-                            width: 150
-                        )
+                        InputMeter(meters: model.meters)
 
                         if model.calibrationRemaining > 0 {
                             Button("Cancel") { model.cancelCalibration() }
@@ -215,5 +209,23 @@ struct CapturedAppList: View {
                 .controlSize(.small)
         }
         .onAppear { model.refreshAudioProcesses() }
+    }
+
+}
+
+/// Watches the meters rather than the model, so that a moving bar does not
+/// rebuild the settings form around it.
+private struct InputMeter: View {
+    @ObservedObject var meters: Meters
+
+    var body: some View {
+        LevelMeter(
+            label: "In",
+            level: meters.input,
+            decibels: meters.inputDecibels,
+            peak: meters.inputPeak,
+            showsTarget: true,
+            width: 150
+        )
     }
 }

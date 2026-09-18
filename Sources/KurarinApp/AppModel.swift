@@ -145,11 +145,8 @@ final class AppModel: ObservableObject {
 
     @Published var slots: [SoundboardSlot?] = Array(repeating: nil, count: SoundboardMixer.slotCount)
     @Published private(set) var slotErrors: [Int: String] = [:]
-
-    @Published private(set) var inputLevel: Float = 0
     @Published private(set) var outputLevel: Float = 0
     /// Falls far more slowly than the bar, so a peak stays readable.
-    @Published private(set) var inputPeak: Float = 0
 
     /// Polls remaining in a calibration run, and the loudest thing heard so far.
     @Published private(set) var calibrationRemaining = 0
@@ -161,8 +158,16 @@ final class AppModel: ObservableObject {
     static let targetPeakDB: Float = -12
     static let comfortableRangeDB: ClosedRange<Float> = -18 ... -6
 
-    private static let meterFall: Float = 0.82
-    private static let peakFall: Float = 0.99
+    /// Published separately: see `Meters`.
+    let meters = Meters()
+
+    /// Whether the settings window is on screen.
+    ///
+    /// A menu bar app spends most of its life with no window at all, and
+    /// driving the interface at meter rate for nobody is the difference
+    /// between idling and being killed for using half a core.
+    var isSettingsVisible = false
+
 
     @Published var hotKeys: [HotKeyManager.Action: HotKey] = HotKeyManager.defaults
     /// The action currently listening for a key press, if any. Published so
@@ -350,8 +355,7 @@ final class AppModel: ObservableObject {
     func stop() {
         engine.stop()
         isRunning = false
-        inputLevel = 0
-        outputLevel = 0
+        meters.clear()
 
         if let uid = previousDefaultInputUID {
             previousDefaultInputUID = nil
@@ -420,17 +424,19 @@ final class AppModel: ObservableObject {
 
         guard isRunning else {
             if isInputClipping { isInputClipping = false }
+            meters.clear()
             return
         }
 
         let levels = engine.drainLevels()
-        // Ballistics: jump to a new peak, fall back gently. An instantaneous
-        // meter flickers too fast to read; one that only rises never comes
-        // down. These are the conventional shapes — the bar follows the
-        // signal, the peak marker hangs behind it long enough to be read.
-        inputLevel = max(levels.input, inputLevel * AppModel.meterFall)
-        outputLevel = max(levels.output, outputLevel * AppModel.meterFall)
-        inputPeak = max(levels.input, inputPeak * AppModel.peakFall)
+
+        // Only while somebody is looking. The engine still has to be drained —
+        // its peaks accumulate until they are read — but turning those numbers
+        // into published state with no window on screen is the whole of what
+        // was tripping the CPU limit.
+        if isSettingsVisible {
+            meters.update(input: levels.input, output: levels.output)
+        }
 
         updateClippingWarning()
 

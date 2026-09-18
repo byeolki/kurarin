@@ -11,7 +11,7 @@ import SwiftUI
 /// left click opens it and the menu moves to the right button, which is where
 /// macOS puts secondary actions anyway.
 @MainActor
-final class StatusItemController: NSObject, NSMenuDelegate {
+final class StatusItemController: NSObject, NSMenuDelegate, NSWindowDelegate {
     private let model: AppModel
     private let item: NSStatusItem
     private var settingsWindow: NSWindow?
@@ -85,6 +85,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
                 rootView: MainWindow().environmentObject(model).frame(minWidth: 620, minHeight: 460)
             )
             window.contentMinSize = NSSize(width: 620, height: 460)
+            window.delegate = self
             settingsWindow = window
         }
 
@@ -92,6 +93,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         // behind whatever the user was looking at without this.
         NSApp.activate(ignoringOtherApps: true)
         settingsWindow?.makeKeyAndOrderFront(nil)
+        model.isSettingsVisible = true
     }
 
     // MARK: - Menu
@@ -195,5 +197,14 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     @objc private func quit() {
         model.stop()
         NSApp.terminate(nil)
+    }
+
+    // MARK: - Window
+
+    /// The interface is only driven while it is on screen. With the window
+    /// closed there is nothing to draw, and a menu bar app spends most of its
+    /// life that way.
+    nonisolated func windowWillClose(_ notification: Notification) {
+        MainActor.assumeIsolated { model.isSettingsVisible = false }
     }
 }
