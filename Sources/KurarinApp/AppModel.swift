@@ -831,6 +831,15 @@ final class AppModel: ObservableObject {
         stamp.dateFormat = "yyyy-MM-dd HH.mm.ss"
         let url = directory.appendingPathComponent("Kurarin \(stamp.string(from: Date())).mov")
 
+        // Asking is the interface's job: the dialog blocks until somebody
+        // answers it, which is not something the recorder should be doing on
+        // whatever thread it was called from.
+        guard await ScreenRecorder.requestPermission() else {
+            recordingNeedsPermission = true
+            report(RecordingError.permissionDenied.localizedDescription)
+            return
+        }
+
         do {
             engine.isCapturingForRecording = true
             try await recorder.start(to: url)
@@ -859,9 +868,12 @@ final class AppModel: ObservableObject {
         // The encoder refusing frames is the one fault that leaves a valid
         // file which is simply shorter than the time it was recording for, so
         // it has to be said rather than left for the user to notice.
-        // Both are silent faults: the file comes out valid and simply shorter
-        // than the time it was recording for, which nobody notices until they
-        // play it back.
+        // Silent faults, all of them: the file comes out valid and simply
+        // missing something, which nobody notices until they play it back.
+        if recorder.systemAudioUnavailable {
+            report("Recorded without the computer's own sound — macOS did not allow it to be captured.")
+        }
+
         if let stopped = recorder.streamFailure {
             report("Screen capture stopped: \(stopped)")
         } else if recorder.framesDropped > 0, recorder.framesReceived > 0 {

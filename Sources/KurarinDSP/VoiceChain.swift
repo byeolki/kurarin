@@ -328,9 +328,6 @@ public final class VoiceChain: AudioProcessor {
         // silence to work with and can sit at a gentler threshold.
         denoiser.process(buffer, frameCount: frameCount)
         gate.process(buffer, frameCount: frameCount)
-        // Last, because low-frequency rumble is what makes a pitch tracker
-        // report an octave too low — and the tracker has already had its look.
-        highPass.process(buffer, frameCount: frameCount)
     }
 
     /// Harmonics one way, air the other.
@@ -369,6 +366,20 @@ public final class VoiceChain: AudioProcessor {
 
     /// Everything that shapes the voice the listener actually hears.
     private func shape(_ buffer: UnsafeMutablePointer<Float>, frameCount: Int) {
+        // Rumble comes out after the shift rather than before it.
+        //
+        // The tracker has already had its look by this point either way, so
+        // the filter was never protecting it. What it was doing was flattening
+        // the glottal pulse into a rise and a fall of similar size, which
+        // leaves the shifter no unambiguous place to put a mark: the grains
+        // land at whatever phase the phrase happened to start on, and at some
+        // of those phases the overlap-add cancels. Measured on a steady 120 Hz
+        // voice with pauses in it, whole phrases came out at exactly half
+        // level and the next one came back — which is what a voice wavering
+        // in and out sounds like. Filtering afterwards removes the same rumble
+        // and leaves the pulse intact.
+        highPass.process(buffer, frameCount: frameCount)
+
         // First, while the shifter's uniform scaling is still the only thing
         // that has moved the formants.
         formantCorrector.process(buffer, frameCount: frameCount)

@@ -83,6 +83,20 @@ public final class ScreenRecorder: NSObject, @unchecked Sendable {
     private var scratch: UnsafeMutablePointer<Float>
     private let scratchCapacity = 16384
 
+    /// Whether macOS will allow a recording at all.
+    public static var hasPermission: Bool { CGPreflightScreenCaptureAccess() }
+
+    /// Puts the system dialog up and waits for an answer.
+    ///
+    /// Blocks, so it is run away from whatever thread the caller is on. macOS
+    /// only ever asks once, and for an application it has not seen signed the
+    /// same way before it does not ask at all — so a false answer here means
+    /// the Screen Recording pane, not another attempt.
+    public static func requestPermission() async -> Bool {
+        if CGPreflightScreenCaptureAccess() { return true }
+        return await Task.detached { CGRequestScreenCaptureAccess() }.value
+    }
+
     public init(audio: SampleRing, sampleRate: Double = 48000) {
         self.sampleRate = sampleRate
         self.audio = audio
@@ -110,17 +124,13 @@ public final class ScreenRecorder: NSObject, @unchecked Sendable {
     public func start(to url: URL) async throws {
         guard !isRecording else { return }
 
-        // Ask before trying. ScreenCaptureKit refuses without permission but
-        // does not raise the prompt itself, so a first-time user would be told
-        // they had denied something nobody ever asked them about.
-        //
-        // Off the main thread, because the request blocks until the dialog is
-        // answered and answering it takes as long as a person takes. Called
-        // where it is isolated to the interface, it freezes the window and the
-        // menu bar until they decide.
-        if !CGPreflightScreenCaptureAccess() {
-            let granted = await Task.detached { CGRequestScreenCaptureAccess() }.value
-            guard granted else { throw RecordingError.permissionDenied }
+        // Refuses rather than asks. Putting the system dialog up is the
+        // interface's job — `requestPermission` below — because the request
+        // blocks until a person answers it, and a recorder that blocks is
+        // wrong in every caller: it freezes the window when called from there,
+        // and hangs for fifteen seconds in a test where nobody can answer.
+        guard CGPreflightScreenCaptureAccess() else {
+            throw RecordingError.permissionDenied
         }
 
         let content: SCShareableContent
@@ -171,6 +181,7 @@ public final class ScreenRecorder: NSObject, @unchecked Sendable {
         systemSamplesSeen = 0
         framesReceived = 0
         framesDropped = 0
+        systemAudioUnavailable = false
         framesRepeated = 0
         streamFailure = nil
         lastFrame = nil
@@ -180,29 +191,18 @@ public final class ScreenRecorder: NSObject, @unchecked Sendable {
         systemAudio.reset()
 
         let filter = SCContentFilter(display: display, excludingWindows: [])
-        let configuration = SCStreamConfiguration()
-        configuration.width = display.width
-        configuration.height = display.height
-        configuration.minimumFrameInterval = CMTime(value: 1, timescale: 30)
-        configuration.queueDepth = 6
-        configuration.showsCursor = true
-        // The computer's own sound: the game, the music, the call. Excluding
-        // our own process keeps the soundboard and the monitoring out of it —
-        // the soundboard is already in the mix we supply, and the monitoring is
-        // the user's own voice coming back, which would double it.
-        configuration.capturesAudio = true
-        configuration.excludesCurrentProcessAudio = true
-        configuration.sampleRate = Int(sampleRate)
-        configuration.channelCount = 1
 
-        // A delegate, so that a stream which stops on its own says so. Without
-        // one the frames simply cease and the recording quietly becomes a
-        // still picture for the rest of its length.
-        let stream = SCStream(filter: filter, configuration: configuration, delegate: self)
-        try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: queue)
-        try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: queue)
-        try await stream.startCapture()
-        self.stream = stream
+        // Capturing what the computer is playing needs a consent of its own,
+        // separate from screen recording. Without it the stream refuses to
+        // start at all — so a missing permission for the extra would cost the
+        // whole recording, picture and voice included. Asked for first, and
+        // dropped if it is refused.
+        do {
+            stream = try await makeStream(filter: filter, display: display, withAudio: true)
+        } catch {
+            stream = try await makeStream(filter: filter, display: display, withAudio: false)
+            systemAudioUnavailable = true
+        }
 
         outputURL = url
         isRecording = true
@@ -213,6 +213,39 @@ public final class ScreenRecorder: NSObject, @unchecked Sendable {
     /// every sample and still end in `.failed`, so finishing is not the same
     /// as succeeding and has to be asked about.
     public private(set) var failure: RecordingError?
+
+    /// Builds and starts the capture stream.
+    private func makeStream(
+        filter: SCContentFilter,
+        display: SCDisplay,
+        withAudio: Bool
+    ) async throws -> SCStream {
+        let configuration = SCStreamConfiguration()
+        configuration.width = display.width
+        configuration.height = display.height
+        configuration.minimumFrameInterval = CMTime(value: 1, timescale: 30)
+        configuration.queueDepth = 6
+        configuration.showsCursor = true
+        // Our own process is left out: the soundboard is already in the mix we
+        // supply, and the monitoring path is the user's own voice coming back.
+        configuration.capturesAudio = withAudio
+        configuration.excludesCurrentProcessAudio = true
+        if withAudio {
+            configuration.sampleRate = Int(sampleRate)
+            configuration.channelCount = 1
+        }
+
+        // A delegate, so that a stream which stops on its own says so. Without
+        // one the frames simply cease and the recording quietly becomes a
+        // still picture for the rest of its length.
+        let stream = SCStream(filter: filter, configuration: configuration, delegate: self)
+        try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: queue)
+        if withAudio {
+            try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: queue)
+        }
+        try await stream.startCapture()
+        return stream
+    }
 
     /// Closes the file from a thread that is about to be taken away.
     ///
@@ -355,6 +388,10 @@ public final class ScreenRecorder: NSObject, @unchecked Sendable {
     public private(set) var framesRepeated = 0
     /// Set when ScreenCaptureKit gives up, which it otherwise does silently.
     public private(set) var streamFailure: String?
+
+    /// True when the recording is running without the computer's own sound,
+    /// because the permission for it was refused.
+    public private(set) var systemAudioUnavailable = false
 
     /// The last frame that arrived, kept so it can be sent again.
     ///

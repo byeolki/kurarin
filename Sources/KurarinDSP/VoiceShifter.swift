@@ -95,6 +95,10 @@ public final class VoiceShifter: AudioProcessor {
     /// shifter sees it.
     private let ownsTracker: Bool
 
+    /// Temporary: the gap between consecutive analysis marks, in samples.
+    var markGaps: [Float] = []
+    private var lastMark: Double = 0
+
     private static let windowTableSize = 4096
     private let windowTable: [Float]
 
@@ -288,6 +292,10 @@ public final class VoiceShifter: AudioProcessor {
                 // partial correction still bounds the drift but leaves no
                 // periodic residue to modulate the output.
                 analysisPosition += (target - analysisPosition) * 0.25
+                if markGaps.count < 400_000 {
+                    markGaps.append(Float(analysisPosition - lastMark))
+                }
+                lastMark = analysisPosition
             }
         }
         if analysisPosition > synthesisPosition {
