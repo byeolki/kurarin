@@ -50,4 +50,46 @@ final class PitchTargetTests: XCTestCase {
             )
         }
     }
+
+    /// What the shifter does before anyone has spoken.
+    ///
+    /// Aiming at a pitch means measuring the speaker first, and there is
+    /// nothing to measure until they have said a couple of seconds' worth.
+    /// Leaving the ratio alone until then left it at the shifter's built-in 1,
+    /// so a preset with a target did nothing at all for the first seconds and
+    /// nothing ever if the tracker never locked — a quiet microphone or a
+    /// gate closing on the voice is enough for that. The preset's own ratio is
+    /// the starting point instead, and the measurement takes over when it
+    /// arrives.
+    func testAimingAtAPitchStillShiftsBeforeItHasHeardAnything() {
+        let chain = VoiceChain(sampleRate: Signal.sampleRate)
+        var parameters = VoiceParameters()
+        parameters.pitchRatio = 1.55
+        parameters.formantRatio = 1.18
+        parameters.targetPitchHz = 200
+        chain.apply(parameters)
+
+        XCTAssertEqual(
+            chain.effectivePitchRatio, 1.55, accuracy: 0.001,
+            "a preset that aims at a pitch does nothing until the speaker is measured"
+        )
+
+        // And the measurement still wins once there is one.
+        var voice = [Float](repeating: 0, count: 48000 * 5)
+        for harmonic in 1...10 {
+            let partial = Signal.sine(
+                frequency: 120 * Float(harmonic),
+                frames: voice.count,
+                amplitude: 0.5 * 0.35 / Float(harmonic)
+            )
+            for i in voice.indices { voice[i] += partial[i] }
+        }
+        _ = processStreaming(chain, voice)
+
+        XCTAssertEqual(chain.detectedPitchHz, 120, accuracy: 6)
+        XCTAssertEqual(
+            chain.effectivePitchRatio, 200 / 120, accuracy: 0.08,
+            "the measured ratio did not take over from the preset's"
+        )
+    }
 }

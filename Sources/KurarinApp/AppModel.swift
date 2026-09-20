@@ -741,7 +741,12 @@ final class AppModel: ObservableObject {
         guard target > 0, isRunning, isEffectEnabled else { return nil }
 
         let heard = engine.chain.detectedPitchHz
-        guard heard > 0 else { return "Listening — say a few words and it will find your voice." }
+        guard heard > 0 else {
+            // The preset's own shift is already running; this only says the
+            // aim has not been taken yet, which is a refinement rather than a
+            // prerequisite.
+            return "Using the preset's shift while it listens — say a few words and it will aim properly."
+        }
 
         // Derived from what was heard rather than read back from the shifter:
         // the chain sets the speaker's pitch on the first voiced block and the

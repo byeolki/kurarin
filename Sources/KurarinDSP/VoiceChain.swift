@@ -129,11 +129,19 @@ public final class VoiceChain: AudioProcessor {
         highShaper.mix = isShifting(clamped) ? clamped.highBandResynthesis : 0
         formantCorrector.ratio = clamped.formantRatio
         formantCorrector.amount = clamped.formantCorrection
-        // With a target set, the ratio is worked out per block from what the
-        // speaker is actually doing; without one it is the parameter itself.
-        if clamped.targetPitchHz <= 0 {
-            shifter.pitchRatio = clamped.pitchRatio
-        }
+        // The preset's ratio is where the shifter starts, target or no target.
+        //
+        // With a target set it is only a starting point — the ratio is worked
+        // out per block from what the speaker is actually doing, and takes over
+        // as soon as there is a measurement to work from. But there is no
+        // measurement until somebody has spoken for a second or two, and
+        // leaving the ratio alone until then meant it sat at whatever the
+        // shifter was built with, which is 1: the effect did nothing at all
+        // until the tracker locked, and nothing ever if it did not lock at all.
+        // A preset that aims at a pitch also carries the ratio that suits an
+        // average voice, which is a far better answer for those seconds than
+        // no shift.
+        shifter.pitchRatio = clamped.pitchRatio
 
         eq.setBands(clamped.eqBands)
 
