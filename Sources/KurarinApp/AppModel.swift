@@ -356,6 +356,8 @@ final class AppModel: ObservableObject {
         engine.stop()
         isRunning = false
         meters.clear()
+        silentTicks = 0
+        isReceivingNothing = false
 
         if let uid = previousDefaultInputUID {
             previousDefaultInputUID = nil
@@ -439,6 +441,7 @@ final class AppModel: ObservableObject {
         }
 
         updateClippingWarning()
+        updateSilenceWarning(input: levels.input)
 
         if calibrationRemaining > 0 {
             calibrationPeak = max(calibrationPeak, levels.input)
@@ -784,6 +787,20 @@ final class AppModel: ObservableObject {
         Task { await finishRecording() }
     }
 
+    private func updateSilenceWarning(input: Float) {
+        guard !isMuted else {
+            silentTicks = 0
+            if isReceivingNothing { isReceivingNothing = false }
+            return
+        }
+        silentTicks = input > 0 ? 0 : silentTicks + 1
+
+        // Four seconds: long enough that a gap between blocks cannot trip it,
+        // short enough to answer the question while the user is still asking.
+        let nothing = silentTicks > 120
+        if nothing != isReceivingNothing { isReceivingNothing = nothing }
+    }
+
     private func updateClippingWarning() {
         let count = engine.clippedInputSamples
         if count > lastClippedCount {
@@ -950,6 +967,16 @@ final class AppModel: ObservableObject {
     }
 
     private var permissionTicks = 0
+
+    /// How long the input has been exactly nothing while the engine ran.
+    ///
+    /// Not the same as quiet. A microphone that is connected and working has a
+    /// noise floor; a reading of exactly zero for seconds means no signal is
+    /// arriving at all — the device went away, or the aggregate came up in a
+    /// shape the engine is reading the wrong part of. That used to be silent,
+    /// which left "my voice stopped working" with nothing to go on.
+    private var silentTicks = 0
+    @Published private(set) var isReceivingNothing = false
 
     /// Used when the app is going away and there is no interface left to tell.
     ///

@@ -32,6 +32,9 @@ public final class AggregateDevice {
 
     public private(set) var deviceID: AudioObjectID = 0
     public private(set) var layout = Layout()
+    /// Set when the aggregate did not come out the shape it was asked for, and
+    /// the tap was dropped rather than trusted.
+    public private(set) var layoutMismatch: String?
     public let sampleRate: Double
 
     private var tapID: AudioObjectID = 0
@@ -101,8 +104,31 @@ public final class AggregateDevice {
             microphone: microphone,
             virtualDevice: virtualDevice,
             monitor: monitor,
-            tapChannels: tap != nil ? 2 : 0
+            tapChannels: tap?.channelCount ?? 0
         )
+
+        // The layout above is worked out from the order the aggregate was
+        // asked for. Core Audio is not obliged to lay the channels out that
+        // way, and if it does not, every offset after the first wrong one is
+        // wrong too — the microphone ends up read from the tap's channels and
+        // the voice disappears, which is a far worse failure than losing the
+        // captured sound.
+        //
+        // So the arithmetic is checked against the device that actually
+        // exists. When they disagree the tap is dropped and the layout
+        // recomputed without it, which is the half that matters.
+        let expected = layout.tapInputOffset + layout.tapChannels
+        let actual = AudioDevices.channelCount(of: created, scope: kAudioObjectPropertyScopeInput)
+        if tap != nil, actual != expected {
+            layoutMismatch = "expected \(expected) input channels, the device has \(actual)"
+            layout = AggregateDevice.computeLayout(
+                subDevices: subDeviceOrder,
+                microphone: microphone,
+                virtualDevice: virtualDevice,
+                monitor: monitor,
+                tapChannels: 0
+            )
+        }
     }
 
     deinit {
@@ -198,6 +224,9 @@ public final class SystemAudioTap {
 
     public let objectID: AudioObjectID
     public let uid: String
+    /// How many channels this tap produces, read from the tap rather than
+    /// assumed: it decides where everything after it sits in the aggregate.
+    public let channelCount: Int
 
     public init(source: Source) throws {
         let description: CATapDescription
@@ -241,6 +270,7 @@ public final class SystemAudioTap {
 
         objectID = created
         uid = identifier.uuidString
+        channelCount = AudioDevices.tapChannelCount(of: created)
     }
 
     /// This process, as Core Audio addresses it.

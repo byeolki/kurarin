@@ -57,6 +57,15 @@ struct DevicesTab: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
 
+                    if model.isReceivingNothing {
+                        Label(
+                            "No signal at all from the microphone — not even its noise floor. If system audio sharing is on, turn it off and press Start again: a shared-sound device the audio system lays out unexpectedly takes the microphone with it.",
+                            systemImage: "exclamationmark.triangle.fill"
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                    }
+
                     // The slider above cannot fix this, which is the whole
                     // reason for saying it out loud: the damage is done before
                     // the audio reaches us.

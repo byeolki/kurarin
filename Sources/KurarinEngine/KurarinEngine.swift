@@ -190,6 +190,14 @@ public final class KurarinEngine {
         aggregate = device
         logLayout(of: device)
 
+        // A tap the aggregate did not lay out where we expected is reported the
+        // same way a tap that failed to open is: the feature is gone either
+        // way, and the alternative — trusting the arithmetic — reads the
+        // microphone from the wrong channels and loses the voice as well.
+        if let mismatch = device.layoutMismatch {
+            captureFailure = "System audio could not be shared: the audio system laid the device out differently than asked (\(mismatch))."
+        }
+
         do {
             ioProcID = try beginRendering(on: device)
         } catch {

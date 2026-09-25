@@ -114,6 +114,27 @@ public enum AudioDevices {
         return status == noErr ? (result as String) : nil
     }
 
+    /// How many channels a process tap actually produces.
+    ///
+    /// A tap's width is not something to assume. A mixdown of one application
+    /// is not necessarily the same shape as a global tap, and the number
+    /// decides where every channel after it sits in the aggregate's buffers —
+    /// so guessing wrong does not lose the tap, it reads the microphone from
+    /// somewhere else.
+    static func tapChannelCount(of tap: AudioObjectID) -> Int {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioTapPropertyFormat,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var format = AudioStreamBasicDescription()
+        var size = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
+        guard AudioObjectGetPropertyData(tap, &address, 0, nil, &size, &format) == noErr else {
+            return 0
+        }
+        return Int(format.mChannelsPerFrame)
+    }
+
     static func channelCount(of device: AudioObjectID, scope: AudioObjectPropertyScope) -> Int {
         let address = address(kAudioDevicePropertyStreamConfiguration, scope: scope)
         guard let size = dataSize(of: device, address), size > 0 else { return 0 }
